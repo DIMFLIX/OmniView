@@ -4,7 +4,7 @@ import threading
 import sys
 import os
 
-SHOW_GUI = False
+SHOW_GUI = True
 
 class CameraManager:
     def __init__(self, show_gui=True, frame_callback=None):
@@ -12,7 +12,7 @@ class CameraManager:
         self.active_windows = set()
         self.lock = threading.Lock()
         self.running = True
-        self.update_interval = 2
+        self.update_interval = 4
         self.show_gui = show_gui
         self.frame_callback = frame_callback
         self.monitor_thread = threading.Thread(target=self._monitor_cameras, daemon=True)
@@ -30,7 +30,7 @@ class CameraManager:
         self._verify_permissions()
 
     def _init_windows(self):
-        self.backend = cv2.CAP_DSHOW
+        self.backend = cv2.CAP_MSMF
         self.check_devices = self._get_windows_devices
 
     def _verify_permissions(self):
@@ -79,6 +79,7 @@ class CameraManager:
 
     def _add_camera(self, dev_id):
         try:
+            time.sleep(0.5)
             cap = cv2.VideoCapture(dev_id, self.backend)
             if cap.isOpened():
                 if sys.platform == 'linux':
@@ -103,8 +104,10 @@ class CameraManager:
                     cv2.waitKey(1)
             except Exception as e:
                 print(f"Error disconnecting camera {dev_id}: {str(e)}")
-            del self.cameras[dev_id]
-            print(f"Camera {dev_id} disconnected")
+            finally:
+                del self.cameras[dev_id]
+                print(f"Camera {dev_id} disconnected")
+
 
     def read_frames(self):
         frames = {}
@@ -146,24 +149,34 @@ def main():
     
     try:
         while True:
-            # Чтение кадров (будет автоматически вызывать callback)
-            frames = manager.read_frames()
+            try:
+                # Чтение кадров (будет автоматически вызывать callback)
+                frames = manager.read_frames()
 
-            if manager.show_gui:
-                for dev_id, frame in frames.items():
-                    cv2.imshow(f'Camera {dev_id}', frame)
-                
-                # Закрываем неактивные окна
-                active_ids = set(frames.keys())
-                for dev_id in list(manager.active_windows):
-                    if dev_id not in active_ids:
-                        cv2.destroyWindow(f'Camera {dev_id}')
-                        manager.active_windows.remove(dev_id)
-                        cv2.waitKey(1)
+                if manager.show_gui:
+                    for dev_id, frame in frames.items():
+                        try:
+                            cv2.imshow(f'Camera {dev_id}', frame)
+                        except Exception as e:
+                            print(f"Error displaying frame from camera {dev_id}: {e}")
+                            manager._remove_camera(dev_id)
+                    
+                    # Закрываем неактивные окна
+                    active_ids = set(frames.keys())
+                    for dev_id in list(manager.active_windows):
+                        if dev_id not in active_ids:
+                            try:
+                                cv2.destroyWindow(f'Camera {dev_id}')
+                                manager.active_windows.remove(dev_id)
+                                cv2.waitKey(1)
+                            except Exception:
+                                pass
 
-            if cv2.waitKey(1) in (ord('q'), 27):
-                break
-            
+                if cv2.waitKey(1) in (ord('q'), 27):
+                    break
+            except Exception as e:
+                print(f"Main loop error: {e}")
+                time.sleep(1)
     except KeyboardInterrupt:
         pass
     finally:
