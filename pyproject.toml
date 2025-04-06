@@ -1,0 +1,35 @@
+[project]
+name = "omniview"
+version = "0.1.0"
+description = "Receiving video stream from multiple cameras "
+authors = [
+  {name = "DIMFLIX", email = "dimflix.official@gmail.com"},
+]
+maintainers = [
+  {name = "DIMFLIX", email = "dimflix.official@gmail.com"}
+]
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICEN[CS]E*"]
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-python>=4.11.0.86",
+]
+
+[tool.uv]
+package=true
+
+[project.urls]
+Homepage = "https://github.com/DIMFLIX/OmniView"
+Documentation = "https://github.com/DIMFLIX/OmniView/wiki"
+Repository = "https://github.com/DIMFLIX/OmniView.git"
+"Bug Tracker" = "https://github.com/DIMFLIX/OmniView/issues"
+Changelog = "https://github.com/DIMFLIX/OmniView/blob/master/CHANGELOG.md"
+
+[tool.pytest.ini_options]
+pythonpath = "."
+
+[tool.bandit]
+exclude_dirs = ["tests", "docs"]
+skips = ["B404", "B603"]
+tests = ["B102", "B101", "B301"]
