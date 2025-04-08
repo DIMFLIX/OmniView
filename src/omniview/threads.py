@@ -5,6 +5,7 @@ import threading
 import time
 from abc import ABC
 from abc import abstractmethod
+from typing import Optional
 
 import cv2
 
@@ -49,7 +50,7 @@ class BaseCameraThread(threading.Thread, ABC):
         self.logger = logging.getLogger(f"{self.__class__.__name__}-{camera_id}")
 
     @abstractmethod
-    def _open_camera(self) -> cv2.VideoCapture | None:
+    def _open_camera(self) -> Optional[cv2.VideoCapture]:
         """Initialize and configure the camera capture"""
 
     @abstractmethod
@@ -121,7 +122,7 @@ class USBCameraThread(BaseCameraThread):
         """
         super().__init__(*args, **kwargs)
 
-    def _open_camera(self) -> cv2.VideoCapture | None:
+    def _open_camera(self) -> Optional[cv2.VideoCapture]:
         if sys.platform == "linux":
             attempts = [lambda: cv2.VideoCapture(self.camera_id, cv2.CAP_V4L2)]
         else:
@@ -166,7 +167,7 @@ class IPCameraThread(BaseCameraThread):
         super().__init__(*args, **kwargs)
         self.rtsp_url = rtsp_url
 
-    def _open_camera(self) -> cv2.VideoCapture | None:
+    def _open_camera(self) -> Optional[cv2.VideoCapture]:
         try:
             cap = cv2.VideoCapture(self.rtsp_url)
             if cap.isOpened():

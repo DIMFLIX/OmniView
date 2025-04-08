@@ -7,7 +7,10 @@ import time
 from abc import ABC
 from abc import abstractmethod
 from typing import Any
-from collections.abc import Callable
+from typing import Callable
+from typing import Dict
+from typing import List
+from typing import Optional
 
 import cv2
 
@@ -24,7 +27,7 @@ class BaseCameraManager(ABC):
         frame_height: int = 480,
         fps: int = 30,
         min_uptime: float = 5.0,
-        frame_callback: Callable[[int, Any], None] | None = None,
+        frame_callback: Optional[Callable[[int, Any], None]] = None,
         exit_keys: tuple = (ord("q"), 27),
     ):
         """
@@ -69,7 +72,7 @@ class BaseCameraManager(ABC):
         self.logger.addHandler(handler)
 
     @abstractmethod
-    def _get_available_devices(self) -> list[int]:
+    def _get_available_devices(self) -> List[int]:
         pass
 
     @abstractmethod
@@ -119,7 +122,7 @@ class BaseCameraManager(ABC):
 
             time.sleep(3)
 
-    def _update_camera_connections(self, current_devices: list[int]):
+    def _update_camera_connections(self, current_devices: List[int]):
         """Add or remove cameras based on availability"""
         # Add newly connected cameras
         for dev_id in current_devices:
@@ -131,7 +134,7 @@ class BaseCameraManager(ABC):
             if self._should_remove_camera(dev_id, current_devices):
                 self._remove_camera(dev_id)
 
-    def _should_remove_camera(self, dev_id: int, current_devices: list[int]) -> bool:
+    def _should_remove_camera(self, dev_id: int, current_devices: List[int]) -> bool:
         """Determine if a camera should be removed"""
         return (
             dev_id not in current_devices
@@ -192,7 +195,7 @@ class BaseCameraManager(ABC):
         )
         return f"Camera {dev_id} ({camera_type}): {source}"
 
-    def process_frames(self) -> dict[int, Any]:
+    def process_frames(self) -> Dict[int, Any]:
         """Process all available frames from the queue"""
         frames = {}
 
@@ -216,7 +219,7 @@ class BaseCameraManager(ABC):
         if self.frame_callback:
             self.frame_callback(dev_id, frame)
 
-    def _add_cached_frames(self, frames: dict[int, Any]):
+    def _add_cached_frames(self, frames: Dict[int, Any]):
         """Add cached frames from inactive cameras"""
         with self.lock:
             for dev_id in list(self.cameras.keys()):
@@ -251,7 +254,7 @@ class BaseCameraManager(ABC):
         if self._check_exit_condition():
             self.stop_event.set()
 
-    def _update_gui_windows(self, frames: dict[int, Any]):
+    def _update_gui_windows(self, frames: Dict[int, Any]):
         """Update all GUI windows with current frames"""
         for dev_id, frame in frames.items():
             try:
@@ -288,7 +291,7 @@ class USBCameraManager(BaseCameraManager):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def _get_available_devices(self) -> list[int]:
+    def _get_available_devices(self) -> List[int]:
         devices = []
         for i in range(self.max_cameras):
             try:
@@ -317,11 +320,11 @@ class USBCameraManager(BaseCameraManager):
 
 
 class IPCameraManager(BaseCameraManager):
-    def __init__(self, rtsp_urls: list[str], *args, **kwargs):
+    def __init__(self, rtsp_urls: List[str], *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.rtsp_urls = rtsp_urls
 
-    def _get_available_devices(self) -> list[int]:
+    def _get_available_devices(self) -> List[int]:
         return list(range(len(self.rtsp_urls)))
 
     def _create_camera_thread(
