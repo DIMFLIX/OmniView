@@ -1,7 +1,7 @@
 [project]
 name = "omniview"
-version = "0.1.0"
-description = "Receiving video stream from multiple cameras "
+version = "1.0.0"
+description = "Receiving video stream from multiple cameras (usb/ip) for further processing"
 authors = [
   {name = "DIMFLIX", email = "dimflix.official@gmail.com"},
 ]
@@ -33,3 +33,7 @@ pythonpath = "."
 exclude_dirs = ["tests", "docs"]
 skips = ["B404", "B603"]
 tests = ["B102", "B101", "B301"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
