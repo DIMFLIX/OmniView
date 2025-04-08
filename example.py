@@ -1,4 +1,4 @@
-from src.omniview.manager import CameraManager
+from src.omniview.managers import USBCameraManager
 
 
 def frame_callback(camera_id, frame):
@@ -7,15 +7,8 @@ def frame_callback(camera_id, frame):
 
 
 if __name__ == "__main__":
-    manager = CameraManager(
-        use_ip_cameras=False,
-        show_gui=True,
-        max_cameras=10,
-        frame_width=640,
-        frame_height=480,
-        fps=30,
-        min_uptime=5.0,
-        frame_callback=frame_callback,
+    manager = USBCameraManager(
+        show_gui=True, max_cameras=4, frame_callback=frame_callback
     )
     try:
         manager.start()

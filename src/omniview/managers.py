@@ -4,158 +4,20 @@ import queue
 import sys
 import threading
 import time
+from abc import ABC
+from abc import abstractmethod
 from typing import Any
 from collections.abc import Callable
 
 import cv2
 
+from .threads import IPCameraThread
+from .threads import USBCameraThread
 
-class CameraThread(threading.Thread):
+
+class BaseCameraManager(ABC):
     def __init__(
         self,
-        camera_id: int,
-        frame_queue: queue.Queue,
-        stop_event: threading.Event,
-        use_ip_camera: bool,
-        rtsp_url: str | None = None,
-        frame_width: int = 640,
-        frame_height: int = 480,
-        fps: int = 30,
-        min_uptime: float = 5.0,
-    ):
-        """
-        Thread for handling a single camera stream
-
-        Args:
-            camera_id: Unique identifier for the camera
-            frame_queue: Queue for sending frames to main thread
-            stop_event: Event to signal thread termination
-            use_ip_camera: Whether to use IP camera (RTSP) or USB camera
-            rtsp_url: RTSP stream URL (only for IP cameras)
-            frame_width: Desired frame width
-            frame_height: Desired frame height
-            fps: Target frames per second
-            min_uptime: Minimum operational time before reconnecting (seconds)
-        """
-        super().__init__()
-        self.camera_id = camera_id
-        self.frame_queue = frame_queue
-        self.stop_event = stop_event
-        self.use_ip_camera = use_ip_camera
-        self.rtsp_url = rtsp_url
-        self.frame_width = frame_width
-        self.frame_height = frame_height
-        self.fps = fps
-        self.min_uptime = min_uptime
-
-        self.cap = None
-        self.last_frame_time = 0
-        self.retry_count = 0
-        self.max_retries = 3
-        self.logger = logging.getLogger(f"CameraThread-{camera_id}")
-
-    def _open_camera(self) -> cv2.VideoCapture | None:
-        """Initialize and configure the camera capture"""
-        if self.use_ip_camera:
-            return self._open_ip_camera()
-        return self._open_usb_camera()
-
-    def _open_ip_camera(self) -> cv2.VideoCapture | None:
-        """Initialize IP camera using RTSP stream"""
-        if not self.rtsp_url:
-            return None
-
-        try:
-            cap = cv2.VideoCapture(self.rtsp_url)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                return cap
-        except Exception as e:
-            self.logger.error(f"Failed to open IP camera {self.rtsp_url}: {e}")
-        return None
-
-    def _open_usb_camera(self) -> cv2.VideoCapture | None:
-        """Initialize USB camera with platform-specific settings"""
-        if sys.platform == "linux":
-            attempts = [lambda: cv2.VideoCapture(self.camera_id, cv2.CAP_V4L2)]
-        else:
-            attempts = [
-                lambda: cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW),
-                lambda: cv2.VideoCapture(self.camera_id, cv2.CAP_MSMF),
-            ]
-
-        for attempt in attempts:
-            try:
-                cap = attempt()
-                if cap.isOpened():
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-                    cap.set(cv2.CAP_PROP_FPS, self.fps)
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-                    return cap
-            except Exception:
-                continue
-        return None
-
-    def _get_source(self) -> str:
-        """Get human-readable camera identifier"""
-        return self.rtsp_url if self.use_ip_camera else f"USB Camera {self.camera_id}"
-
-    def run(self):
-        """Main thread loop for camera processing"""
-        while not self.stop_event.is_set() and self.retry_count < self.max_retries:
-            source = self._get_source()
-            try:
-                self.cap = self._open_camera()
-                if not self.cap or not self.cap.isOpened():
-                    raise RuntimeError(f"Cannot open camera {source}")
-
-                self._process_camera_stream(source)
-
-            except Exception as e:
-                self._handle_camera_error(source, e)
-            finally:
-                self._release_camera_resources()
-
-    def _process_camera_stream(self, source: str):
-        """Continuously read and process frames from camera"""
-        self.retry_count = 0
-        self.logger.info(f"Camera {source} started")
-        start_time = time.time()
-
-        while not self.stop_event.is_set():
-            ret, frame = self.cap.read()
-            if not ret:
-                if time.time() - start_time < self.min_uptime:
-                    self.logger.warning(f"Camera {source} frame read error")
-                    time.sleep(0.1)
-                    continue
-                break
-
-            self.frame_queue.put((self.camera_id, frame))
-            self.last_frame_time = time.time()
-
-    def _handle_camera_error(self, source: str, error: Exception):
-        """Handle camera errors and schedule reconnection"""
-        self.logger.error(f"Camera {source} error: {str(error)}")
-        self.retry_count += 1
-        if self.retry_count < self.max_retries:
-            self.logger.info(f"Reconnecting to {source}...")
-            time.sleep(2.0)
-
-    def _release_camera_resources(self):
-        """Clean up camera resources"""
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
-        self.cap = None
-
-
-class CameraManager:
-    def __init__(
-        self,
-        use_ip_cameras: bool = False,
-        ip_cameras: list[str] | None = None,
         show_gui: bool = True,
         max_cameras: int = 10,
         frame_width: int = 640,
@@ -166,11 +28,9 @@ class CameraManager:
         exit_keys: tuple = (ord("q"), 27),
     ):
         """
-        Manager for handling multiple camera streams
+        Base manager for handling multiple camera streams
 
         Args:
-            use_ip_cameras: Whether to use IP cameras (RTSP) or USB cameras
-            ip_cameras: List of RTSP stream URLs for IP cameras
             show_gui: Display video windows
             max_cameras: Maximum number of cameras to handle
             frame_width: Desired frame width
@@ -182,8 +42,6 @@ class CameraManager:
         """
         self._setup_logging()
 
-        self.use_ip_cameras = use_ip_cameras
-        self.ip_cameras = ip_cameras or []
         self.show_gui = show_gui
         self.max_cameras = max_cameras
         self.frame_width = frame_width
@@ -196,7 +54,7 @@ class CameraManager:
         self.active_windows = set()
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.cameras = {}
+        self.cameras: dict[int, dict] = {}
         self.frame_queue = queue.Queue(maxsize=self.max_cameras * 2)
 
         if self.show_gui and sys.platform == "linux":
@@ -204,11 +62,19 @@ class CameraManager:
 
     def _setup_logging(self):
         """Configure logging settings"""
-        self.logger = logging.getLogger("CameraManager")
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
         self.logger.addHandler(handler)
+
+    @abstractmethod
+    def _get_available_devices(self) -> list[int]:
+        pass
+
+    @abstractmethod
+    def _create_camera_thread(self, camera_id: int) -> threading.Thread:
+        pass
 
     def start(self):
         """Start the camera manager and begin processing"""
@@ -243,30 +109,6 @@ class CameraManager:
                 pass
         self.active_windows.clear()
 
-    def _get_available_devices(self) -> list[int]:
-        """Get list of available camera devices"""
-        if self.use_ip_cameras:
-            return list(range(len(self.ip_cameras)))
-
-        devices = []
-        for i in range(self.max_cameras):
-            try:
-                if sys.platform == "linux":
-                    dev_path = f"/dev/video{i}"
-                    if os.path.exists(dev_path):
-                        try:
-                            with open(
-                                f"/sys/class/video4linux/video{i}/name") as f:
-                                if "camera" in f.read().lower():
-                                    devices.append(i)
-                        except Exception:
-                            devices.append(i)
-                else:
-                    devices.append(i)
-            except Exception as e:
-                self.logger.warning(f"Device check error for {i}: {str(e)}")
-        return devices
-
     def _monitor_cameras(self):
         """Continuously monitor and update camera connections"""
         while not self.stop_event.is_set():
@@ -291,8 +133,6 @@ class CameraManager:
 
     def _should_remove_camera(self, dev_id: int, current_devices: list[int]) -> bool:
         """Determine if a camera should be removed"""
-        if self.use_ip_cameras:
-            return not self.cameras[dev_id]["thread"].is_alive()
         return (
             dev_id not in current_devices
             and not self.cameras[dev_id]["thread"].is_alive()
@@ -303,34 +143,23 @@ class CameraManager:
         if dev_id in self.cameras:
             return
 
-        source = self.ip_cameras[dev_id] if self.use_ip_cameras else dev_id
-        self.logger.info(f"Adding camera {source}")
+        self.logger.info(f"Adding camera {dev_id}")
 
         try:
             stop_event = threading.Event()
-            thread = CameraThread(
-                camera_id=dev_id,
-                frame_queue=self.frame_queue,
-                stop_event=stop_event,
-                use_ip_camera=self.use_ip_cameras,
-                rtsp_url=self.ip_cameras[dev_id] if self.use_ip_cameras else None,
-                frame_width=self.frame_width,
-                frame_height=self.frame_height,
-                fps=self.fps,
-                min_uptime=self.min_uptime,
-            )
+            thread = self._create_camera_thread(dev_id, stop_event)
 
             self.cameras[dev_id] = {
                 "thread": thread,
                 "stop_event": stop_event,
                 "last_frame": None,
                 "last_update": 0,
-                "source": source,
+                "source": thread._get_source(),
             }
 
             thread.start()
         except Exception as e:
-            self.logger.error(f"Error adding camera {source}: {str(e)}")
+            self.logger.error(f"Error adding camera {dev_id}: {str(e)}")
 
     def _remove_camera(self, dev_id: int):
         """Stop and remove a camera thread"""
@@ -357,8 +186,7 @@ class CameraManager:
                 del self.cameras[dev_id]
 
     def _get_window_title(self, dev_id: int) -> str:
-        """Generate window title for camera display"""
-        camera_type = "IP" if self.use_ip_cameras else "USB"
+        camera_type = self.__class__.__name__.replace("CameraManager", "")
         source = (
             self.cameras[dev_id]["source"] if dev_id in self.cameras else str(dev_id)
         )
@@ -454,3 +282,58 @@ class CameraManager:
 
         key = cv2.waitKey(1)
         return key in self.exit_keys
+
+
+class USBCameraManager(BaseCameraManager):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def _get_available_devices(self) -> list[int]:
+        devices = []
+        for i in range(self.max_cameras):
+            try:
+                if sys.platform == "linux":
+                    dev_path = f"/dev/video{i}"
+                    if os.path.exists(dev_path):
+                        devices.append(i)
+                else:
+                    devices.append(i)
+            except Exception:
+                continue
+        return devices
+
+    def _create_camera_thread(
+        self, camera_id: int, stop_event: threading.Event
+    ) -> threading.Thread:
+        return USBCameraThread(
+            camera_id=camera_id,
+            frame_queue=self.frame_queue,
+            stop_event=stop_event,
+            frame_width=self.frame_width,
+            frame_height=self.frame_height,
+            fps=self.fps,
+            min_uptime=self.min_uptime,
+        )
+
+
+class IPCameraManager(BaseCameraManager):
+    def __init__(self, rtsp_urls: list[str], *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rtsp_urls = rtsp_urls
+
+    def _get_available_devices(self) -> list[int]:
+        return list(range(len(self.rtsp_urls)))
+
+    def _create_camera_thread(
+        self, camera_id: int, stop_event: threading.Event
+    ) -> threading.Thread:
+        return IPCameraThread(
+            rtsp_url=self.rtsp_urls[camera_id],
+            camera_id=camera_id,
+            frame_queue=self.frame_queue,
+            stop_event=stop_event,
+            frame_width=self.frame_width,
+            frame_height=self.frame_height,
+            fps=self.fps,
+            min_uptime=self.min_uptime,
+        )
