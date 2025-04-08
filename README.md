@@ -30,44 +30,65 @@ python example.py
 ```
 
 ## 🛠️ Использование
-### Базовый пример
+### Базовый пример для USB камер
 ```python
-from omniview import CameraManager
+from omniview.managers import USBCameraManager
+
 
 def frame_callback(camera_id, frame):
-    # Ваша обработка кадра
+    # Your framing
     pass
 
-config = {
-    'use_ip_cameras': True,
-    'ip_cameras': [
-        "rtsp://admin:password@192.168.1.100/stream1",
-        "rtsp://user:pass@192.168.1.101:554/ch0.h264"
-    ],
-    'show_gui': True,
-    'frame_callback': frame_callback
-}
 
-manager = CameraManager(**config)
+if __name__ == "__main__":
+    manager = USBCameraManager(
+        show_gui=True,
+        max_cameras=4,
+        frame_callback=frame_callback
+    )
+    try:
+        manager.start()
+    except KeyboardInterrupt:
+        manager.stop()
 
-try:
-    manager.start()
-except KeyboardInterrupt:
-    manager.stop()
+```
+
+### Базовый пример для IP камер
+```python
+from omniview.managers import IPCameraManager
+
+
+def frame_callback(camera_id, frame):
+    # Your framing
+    pass
+
+
+if __name__ == "__main__":
+    manager = IPCameraManager(
+        show_gui=True,
+        rtsp_urls=[
+            "rtsp://admin:12345@192.168.0.1:9090",
+        ],
+        max_cameras=4,
+        frame_callback=frame_callback
+    )
+    try:
+        manager.start()
+    except KeyboardInterrupt:
+        manager.stop()
+
 ```
 
 ## 📚 API
-### Класс CameraManager
 **Основные методы:**
 - `start()` - запускает менеджер камер (блокирующий вызов)
 - `stop()` - корректно останавливает все потоки
 - `process_frames()` - возвращает словарь текущих кадров (ID: кадр)
 
+### Класс USBCameraManager
 **Параметры конструктора:**
 | Параметр         | Тип       | По умолчанию | Описание                     |
 |------------------|-----------|--------------|------------------------------|
-| use_ip_cameras   | bool      | False        | Использовать IP-камеры       |
-| ip_cameras       | list[str] | []           | Список RTSP URL              |
 | show_gui         | bool      | True         | Показывать окна с видео      |
 | max_cameras      | int       | 10           | Макс. количество камер       |
 | frame_width      | int       | 640          | Ширина кадра                 |
@@ -76,6 +97,12 @@ except KeyboardInterrupt:
 | min_uptime       | float     | 5.0          | Мин. время работы (сек)      |
 | frame_callback   | function  | None         | Callback для обработки кадров|
 | exit_keys        | tuple     | (ord('q'),27)| Клавиши для выхода           |
+
+### Класс IPCameraManager
+**Параметры конструктора (Все те-же самые что у USBCameraManager, но с добавлением):**
+| Параметр         | Тип       | По умолчанию | Описание                     |
+|------------------|-----------|--------------|------------------------------|
+| rtsp_urls        | list[str] | []           | Список RTSP URL              |
 
 ## 🤝 Развитие проекта
 Приветствуются:

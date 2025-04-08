@@ -288,6 +288,20 @@ class BaseCameraManager(ABC):
 
 
 class USBCameraManager(BaseCameraManager):
+    """
+    Manager for handling multiple USB camera streams
+
+    Args:
+        show_gui: Display video windows
+        max_cameras: Maximum number of cameras to handle
+        frame_width: Desired frame width
+        frame_height: Desired frame height
+        fps: Target frames per second
+        min_uptime: Minimum operational time before reconnecting (seconds)
+        frame_callback: Callback function for frame processing
+        exit_keys: Keyboard keys to exit the application
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -320,6 +334,21 @@ class USBCameraManager(BaseCameraManager):
 
 
 class IPCameraManager(BaseCameraManager):
+    """
+    Manager for handling multiple IP camera streams
+
+    Args:
+        rtsp_urls: RTSP stream URLs
+        show_gui: Display video windows
+        max_cameras: Maximum number of cameras to handle
+        frame_width: Desired frame width
+        frame_height: Desired frame height
+        fps: Target frames per second
+        min_uptime: Minimum operational time before reconnecting (seconds)
+        frame_callback: Callback function for frame processing
+        exit_keys: Keyboard keys to exit the application
+    """
+
     def __init__(self, rtsp_urls: List[str], *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.rtsp_urls = rtsp_urls
