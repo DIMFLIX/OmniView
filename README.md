@@ -1,36 +1,43 @@
-# Omniview
-Система для одновременного просмотра и обработки потоков с нескольких камер (USB/IP) с возможностью интеграции в компьютерное зрение.
 
-## 🚀 Возможности
-- Поддержка USB и IP-камер (через RTSP)
-- Автоматическое переподключение при обрыве связи
-- Настраиваемые параметры камер (разрешение, FPS)
-- Многопоточная обработка кадров
-- Гибкая система обратных вызовов для обработки видео
-- Готовый GUI для просмотра потоков
-- Конфигурирование через параметры конструктора
+<div align="center">
+	<img src=".meta/logo.png">
+    <hr/>
+    <br/>
+	<a href="https://github.com/DIMFLIX/OmniView/issues">
+		<img src="https://img.shields.io/github/issues/DIMFLIX/OmniView?color=ffb29b&labelColor=1C2325&style=for-the-badge">
+	</a>
+	<a href="https://github.com/DIMFLIX/OmniView/stargazers">
+		<img src="https://img.shields.io/github/stars/DIMFLIX/OmniView?color=fab387&labelColor=1C2325&style=for-the-badge">
+	</a>
+	<a href="./LICENSE">
+		<img src="https://img.shields.io/github/license/DIMFLIX/OmniView?color=FCA2AA&labelColor=1C2325&style=for-the-badge">
+	</a>
+	<br>
+	<br>
+	<a href="./README.ru.md">
+		<img src="https://img.shields.io/badge/README-RU-blue?color=cba6f7&labelColor=1C2325&style=for-the-badge">
+	</a>
+	<a href="./README.md">
+		<img src="https://img.shields.io/badge/README-ENG-blue?color=C9CBFF&labelColor=C9CBFF&style=for-the-badge">
+	</a>
+</div>
 
-## ⚙️ Установка
-1. Клонируйте репозиторий:
+# 📝 About the project
+A system for simultaneous viewing and processing of streams from multiple cameras (USB/IP) with the ability to integrate into computer vision.
+## 🚀 Features
+- Support for USB and IP cameras (via RTSP)
+- Automatic reconnection in case of connection failure
+- Customizable camera parameters (resolution, FPS)
+- Multithreaded frame processing
+- Flexible callback system for video processing
+- Ready-to-use GUI for viewing streams
+- Configuration via constructor parameters
+## ⚙️ Installation
 ```bash
-git clone https://github.com/DIMFLIX/OmniView.git
-cd OmniView
+pip install omniview
 ```
-
-2. Установите [пакетный менеджер](https://docs.astral.sh/uv/getting-started/installation/)
-
-3. Установите зависимости:
-```bash
-uv sync
-```
-
-4. Запустите базовый пример
-```bash
-python example.py
-```
-
-## 🛠️ Использование
-### Базовый пример для USB камер
+## 🛠️ Usage
+### 🔌 Basic example for USB cameras
 ```python
 from omniview.managers import USBCameraManager
 
@@ -53,7 +60,7 @@ if __name__ == "__main__":
 
 ```
 
-### Базовый пример для IP камер
+### 🌐 Basic example for IP cameras
 ```python
 from omniview.managers import IPCameraManager
 
@@ -80,37 +87,37 @@ if __name__ == "__main__":
 ```
 
 ## 📚 API
-**Основные методы:**
-- `start()` - запускает менеджер камер (блокирующий вызов)
-- `stop()` - корректно останавливает все потоки
-- `process_frames()` - возвращает словарь текущих кадров (ID: кадр)
+**Main methods:**
+- `start()` - starts the camera manager (blocking call)
+- `stop()` - stops all threads correctly
+- `process_frames()` - returns dictionary of current frames (ID: frame)
 
-### Класс USBCameraManager
-**Параметры конструктора:**
-| Параметр         | Тип       | По умолчанию | Описание                     |
+### Class USBCameraManager
+**Designer Parameters:**
+| Parameter | Type | Default | Description |
 |------------------|-----------|--------------|------------------------------|
-| show_gui         | bool      | True         | Показывать окна с видео      |
-| max_cameras      | int       | 10           | Макс. количество камер       |
-| frame_width      | int       | 640          | Ширина кадра                 |
-| frame_height     | int       | 480          | Высота кадра                 |
-| fps              | int       | 30           | Целевой FPS                  |
-| min_uptime       | float     | 5.0          | Мин. время работы (сек)      |
-| frame_callback   | function  | None         | Callback для обработки кадров|
-| exit_keys        | tuple     | (ord('q'),27)| Клавиши для выхода           |
+| show_gui | bool | True | True | Show video windows |
+| max_cameras | int | 10 | Max. number of cameras |
+| frame_width | int | 640 | frame width |
+| frame_height | int | 480 | frame height |
+| fps | int | 30 | target FPS |
+| min_uptime | float | 5.0 | Min. uptime (sec) |
+| frame_callback | function | None | Callback for frame processing|
+| exit_keys | tuple | (ord('q'),27)| exit keys |
 
-### Класс IPCameraManager
-**Параметры конструктора (Все те-же самые что у USBCameraManager, но с добавлением):**
-| Параметр         | Тип       | По умолчанию | Описание                     |
+### Class IPCameraManager
+**Builder parameters (Same as USBCameraManager, but with an addition):**
+| Parameter | Type | Default | Description |
 |------------------|-----------|--------------|------------------------------|
-| rtsp_urls        | list[str] | []           | Список RTSP URL              |
+| rtsp_urls | list[str] | [] | List of RTSP URLs |
 
-## 🤝 Развитие проекта
-Приветствуются:
-- Отчеты об ошибках
+## 🤝 Project Development
+Welcome:
+- Bug reports
 - Pull requests
-- Идеи по улучшению
-- Примеры использования
+- Ideas for improvement
+- Usage examples
 
-## 📄 Лицензия
-Проект распространяется под лицензией GNU GPL v3.
-Подробности см. в файле [LICENSE](LICENSE).
+## 📄 License
+The project is distributed under the GNU GPL v3 license.
+See the [LICENSE](LICENSE) file for details.

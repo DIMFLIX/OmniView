@@ -1,12 +1,36 @@
 [project]
 name = "omniview"
-version = "1.0.0"
+version = "1.0.1"
 description = "Receiving video stream from multiple cameras (usb/ip) for further processing"
 authors = [
   {name = "DIMFLIX", email = "dimflix.official@gmail.com"},
 ]
 maintainers = [
   {name = "DIMFLIX", email = "dimflix.official@gmail.com"}
+]
+keywords = [
+  "python", "opencv", "iot", "ai", "surveillance", 
+  "tensorflow", "raspberrypi", "realtime", "multithreading", 
+  "pytorch", "yolo", "machinelearning", "deeplearning", 
+  "computervision", "objectdetection", "neuralnetworks", 
+  "videostreaming", "videoprocessing", "multicamera",
+]
+classifiers = [
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Image Processing",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Multimedia :: Video",
+
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+
+  "Operating System :: OS Independent",
 ]
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -16,15 +40,15 @@ dependencies = [
     "opencv-python>=4.11.0.86",
 ]
 
-[tool.uv]
-package=true
-
 [project.urls]
 Homepage = "https://github.com/DIMFLIX/OmniView"
 Documentation = "https://github.com/DIMFLIX/OmniView/wiki"
 Repository = "https://github.com/DIMFLIX/OmniView.git"
 "Bug Tracker" = "https://github.com/DIMFLIX/OmniView/issues"
 Changelog = "https://github.com/DIMFLIX/OmniView/blob/master/CHANGELOG.md"
+
+[tool.uv]
+package=true
 
 [tool.pytest.ini_options]
 pythonpath = "."
