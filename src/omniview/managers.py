@@ -14,6 +14,7 @@ from typing import Optional
 
 import cv2
 
+from .threads import BaseCameraThread
 from .threads import IPCameraThread
 from .threads import USBCameraThread
 
@@ -21,7 +22,8 @@ from .threads import USBCameraThread
 class BaseCameraManager(ABC):
     def __init__(
         self,
-        show_gui: bool = True,
+        show_gui: bool = False,
+        show_camera_id: bool = False,
         max_cameras: int = 10,
         frame_width: int = 640,
         frame_height: int = 480,
@@ -35,6 +37,7 @@ class BaseCameraManager(ABC):
 
         Args:
             show_gui: Display video windows
+            show_camera_id: Adds a caption with the camera ID to the frame
             max_cameras: Maximum number of cameras to handle
             frame_width: Desired frame width
             frame_height: Desired frame height
@@ -46,6 +49,7 @@ class BaseCameraManager(ABC):
         self._setup_logging()
 
         self.show_gui = show_gui
+        self.show_camera_id = show_camera_id
         self.max_cameras = max_cameras
         self.frame_width = frame_width
         self.frame_height = frame_height
@@ -254,11 +258,25 @@ class BaseCameraManager(ABC):
         if self._check_exit_condition():
             self.stop_event.set()
 
+    def _show_camera_id_in_frame(self, frame, camera_id: int):
+        """Adds a caption with the camera number to the frame"""
+        cv2.putText(
+            frame,
+            f"Camera {camera_id}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 255, 0),
+            2,
+        )
+
     def _update_gui_windows(self, frames: Dict[int, Any]):
         """Update all GUI windows with current frames"""
         for dev_id, frame in frames.items():
             try:
                 window_title = self._get_window_title(dev_id)
+                if self.show_camera_id:
+                    self._show_camera_id_in_frame(frame, dev_id)
                 cv2.imshow(window_title, frame)
                 self.active_windows.add(window_title)
             except Exception as e:
@@ -287,12 +305,147 @@ class BaseCameraManager(ABC):
         return key in self.exit_keys
 
 
-class USBCameraManager(BaseCameraManager):
+class SequentialCameraMixin:
+    """A mixin that adds sequential camera switching functionality to camera managers.
+
+    This mixin allows cameras to be displayed one by one in a cyclic order,
+    with a configurable switch interval. It's designed to work with camera managers
+    inheriting from `BaseCameraManager`.
+
+    Requires the host class to implement:
+        Attributes:
+            - frame_callback: Optional[Callable]
+            - stop_event: threading.Event
+            - cameras_list: List[int]
+            - current_cam_idx: int
+            - exit_keys: tuple
+            - cap: cv2.VideoCapture
+            - frame_width: int
+            - frame_height: int
+            - fps: int
+            - show_gui: bool
+            - show_camera_id: bool
+            - window_title: str
+            - switch_interval: float
+
+        Methods:
+            - _get_available_devices()
+            - _show_camera_id_in_frame()
+    """
+
+    def _open_camera(self, camera_id: int) -> Optional[cv2.VideoCapture]:
+        """Open camera with platform-specific parameters."""
+        backends = ["linux"] if sys.platform == "linux" else ["default"]
+        for backend in backends:
+            for api in BaseCameraThread.DEFAULT_BACKENDS[backend]:
+                cap = cv2.VideoCapture(camera_id, api)
+                if cap.isOpened():
+                    return cap
+        return None
+
+    def _sequential_main_loop(self):
+        """Main loop for sequential camera switching"""
+        self.cameras_list = self._get_available_devices()
+        if not self.cameras_list:
+            self.logger.error("No USB cameras found")
+            return
+
+        self.logger.info(f"Available cameras: {self.cameras_list}")
+
+        try:
+            while not self.stop_event.is_set():
+                camera_id = self.cameras_list[self.current_cam_idx]
+                success = self._process_camera(camera_id)
+
+                if not success and not self.stop_event.is_set():
+                    self.logger.warning(f"Skipping camera {camera_id}")
+
+                self.current_cam_idx = (self.current_cam_idx + 1) % len(
+                    self.cameras_list
+                )
+
+        except Exception as e:
+            self.logger.error(f"Sequential mode error: {str(e)}")
+        finally:
+            self._cleanup_sequential()
+
+    def _check_exit_keys(self):
+        """Handle exit key presses"""
+        key = cv2.waitKey(1)
+        if key in self.exit_keys:
+            self.stop_event.set()
+
+    def _process_camera(self, camera_id: int) -> bool:
+        """Process one camera for switch_interval duration"""
+        self.cap = self._open_camera(camera_id)
+        if not self.cap or not self.cap.isOpened():
+            return False
+
+        try:
+            self._configure_camera()
+            start_time = time.time()
+
+            while not self.stop_event.is_set():
+                self._handle_frame(camera_id)
+                if self._check_switch_time(start_time):
+                    break
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Camera {camera_id} error: {str(e)}")
+            return False
+        finally:
+            self.cap.release()
+            self.cap = None
+
+    def _configure_camera(self):
+        """Set camera parameters"""
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
+        self.cap.set(cv2.CAP_PROP_FPS, self.fps)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    def _handle_frame(self, camera_id: int):
+        """Read and process single frame"""
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+
+        if self.show_gui:
+            self._display_frame(camera_id, frame)
+
+        if self.frame_callback:
+            self.frame_callback(camera_id, frame)
+
+        self._check_exit_keys()
+
+    def _display_frame(self, camera_id: int, frame):
+        """Show frame in GUI window"""
+        if self.show_camera_id:
+            self._show_camera_id_in_frame(frame, camera_id)
+
+        cv2.imshow(self.window_title, frame)
+
+    def _check_switch_time(self, start_time: float) -> bool:
+        """Check if switch interval has elapsed"""
+        return (time.time() - start_time) >= self.switch_interval
+
+    def _cleanup_sequential(self):
+        """Final cleanup for sequential mode"""
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+        if self.show_gui:
+            cv2.destroyAllWindows()
+        self.stop()
+
+
+class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
     """
     Manager for handling multiple USB camera streams
 
     Args:
         show_gui: Display video windows
+        show_camera_id: Adds a caption with the camera ID to the frame
         max_cameras: Maximum number of cameras to handle
         frame_width: Desired frame width
         frame_height: Desired frame height
@@ -300,23 +453,42 @@ class USBCameraManager(BaseCameraManager):
         min_uptime: Minimum operational time before reconnecting (seconds)
         frame_callback: Callback function for frame processing
         exit_keys: Keyboard keys to exit the application
+        sequential_mode: Method to show the cameras one by one
+        switch_interval: The time after which the cameras will change. Only works if sequential_mode is selected
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        *args,
+        sequential_mode: bool = False,
+        switch_interval: float = 5.0,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
+        self.sequential_mode = sequential_mode
+        self.switch_interval = switch_interval
+        self.current_cam_idx = 0
+        self.cameras_list = []
+        self.cap = None
+        self.window_title = "USB Camera Switcher"
+
+    def start(self):
+        """Start camera processing in selected mode"""
+        if self.sequential_mode:
+            self._sequential_main_loop()
+        else:
+            super().start()
 
     def _get_available_devices(self) -> List[int]:
         devices = []
+
         for i in range(self.max_cameras):
-            try:
-                if sys.platform == "linux":
-                    dev_path = f"/dev/video{i}"
-                    if os.path.exists(dev_path):
-                        devices.append(i)
-                else:
-                    devices.append(i)
-            except Exception:
-                continue
+            cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+            if cap.isOpened():
+                devices.append(i)
+                cap.release()
+            else:
+                self.logger.info(f"The camera with index {i} is not available")
         return devices
 
     def _create_camera_thread(

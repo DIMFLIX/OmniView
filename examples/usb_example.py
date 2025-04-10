@@ -8,7 +8,7 @@ def frame_callback(camera_id, frame):
 
 if __name__ == "__main__":
     manager = USBCameraManager(
-        show_gui=True, max_cameras=4, frame_callback=frame_callback
+        show_gui=True, show_camera_id=True, frame_callback=frame_callback
     )
     try:
         manager.start()

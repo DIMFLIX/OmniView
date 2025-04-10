@@ -50,7 +50,7 @@ def frame_callback(camera_id, frame):
 if __name__ == "__main__":
     manager = USBCameraManager(
         show_gui=True,
-        max_cameras=4,
+        show_camera_id=True,
         frame_callback=frame_callback
     )
     try:
@@ -76,7 +76,6 @@ if __name__ == "__main__":
         rtsp_urls=[
             "rtsp://admin:12345@192.168.0.1:9090",
         ],
-        max_cameras=4,
         frame_callback=frame_callback
     )
     try:
@@ -90,26 +89,28 @@ if __name__ == "__main__":
 **Main methods:**
 - `start()` - starts the camera manager (blocking call)
 - `stop()` - stops all threads correctly
-- `process_frames()` - returns dictionary of current frames (ID: frame)
 
 ### Class USBCameraManager
 **Designer Parameters:**
-| Parameter | Type | Default | Description |
-|------------------|-----------|--------------|------------------------------|
-| show_gui | bool | True | True | Show video windows |
-| max_cameras | int | 10 | Max. number of cameras |
-| frame_width | int | 640 | frame width |
-| frame_height | int | 480 | frame height |
-| fps | int | 30 | target FPS |
-| min_uptime | float | 5.0 | Min. uptime (sec) |
-| frame_callback | function | None | Callback for frame processing|
-| exit_keys | tuple | (ord('q'),27)| exit keys |
+| Parameter       | Type     | Default       | Description                                                                             |
+| --------------- | -------- | ------------- | --------------------------------------------------------------------------------------- |
+| show_gui        | bool     | False         | Show video windows                                                                      |
+| show_camera_id  | bool     | False         | Adds a caption with the camera ID to the frame                                          |
+| max_cameras     | int      | 10            | Max. number of cameras                                                                  |
+| frame_width     | int      | 640           | frame width                                                                             |
+| frame_height    | int      | 480           | frame height                                                                            |
+| fps             | int      | 30            | target FPS                                                                              |
+| min_uptime      | float    | 5.0           | Min. uptime (sec)                                                                       |
+| frame_callback  | function | None          | Callback for frame processing                                                           |
+| exit_keys       | tuple    | (ord('q'),27) | exit keys                                                                               |
+| sequential_mode | bool     | False         | Method to show the cameras one by one                                                   |
+| switch_interval | float    | 5.0           | The time after which the cameras will change. Only works if sequential_mode is selected |
 
 ### Class IPCameraManager
 **Builder parameters (Same as USBCameraManager, but with an addition):**
-| Parameter | Type | Default | Description |
-|------------------|-----------|--------------|------------------------------|
-| rtsp_urls | list[str] | [] | List of RTSP URLs |
+| Parameter | Type      | Default | Description       |
+| --------- | --------- | ------- | ----------------- |
+| rtsp_urls | list[str] | []      | List of RTSP URLs |
 
 ## 🤝 Project Development
 Welcome:

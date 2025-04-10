@@ -12,8 +12,7 @@ if __name__ == "__main__":
         rtsp_urls=[
             "rtsp://admin:12345@192.168.0.1:9090",
         ],
-        max_cameras=4,
-        frame_callback=frame_callback
+        frame_callback=frame_callback,
     )
     try:
         manager.start()

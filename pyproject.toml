@@ -1,6 +1,6 @@
 [project]
 name = "omniview"
-version = "1.0.1"
+version = "1.2.0"
 description = "Receiving video stream from multiple cameras (usb/ip) for further processing"
 authors = [
   {name = "DIMFLIX", email = "dimflix.official@gmail.com"},
@@ -9,10 +9,10 @@ maintainers = [
   {name = "DIMFLIX", email = "dimflix.official@gmail.com"}
 ]
 keywords = [
-  "python", "opencv", "iot", "ai", "surveillance", 
-  "tensorflow", "raspberrypi", "realtime", "multithreading", 
-  "pytorch", "yolo", "machinelearning", "deeplearning", 
-  "computervision", "objectdetection", "neuralnetworks", 
+  "python", "opencv", "iot", "ai", "surveillance",
+  "tensorflow", "raspberrypi", "realtime", "multithreading",
+  "pytorch", "yolo", "machinelearning", "deeplearning",
+  "computervision", "objectdetection", "neuralnetworks",
   "videostreaming", "videoprocessing", "multicamera",
 ]
 classifiers = [

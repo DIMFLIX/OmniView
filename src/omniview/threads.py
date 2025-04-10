@@ -5,12 +5,18 @@ import threading
 import time
 from abc import ABC
 from abc import abstractmethod
+from typing import Any
 from typing import Optional
 
 import cv2
 
 
 class BaseCameraThread(threading.Thread, ABC):
+    DEFAULT_BACKENDS = {
+        "linux": [cv2.CAP_V4L2],
+        "default": [cv2.CAP_DSHOW, cv2.CAP_MSMF],
+    }
+
     def __init__(
         self,
         camera_id: int,
@@ -49,13 +55,33 @@ class BaseCameraThread(threading.Thread, ABC):
         self.max_retries = 3
         self.logger = logging.getLogger(f"{self.__class__.__name__}-{camera_id}")
 
+    def _try_open_camera(self, backends: list) -> Optional[cv2.VideoCapture]:
+        """A common method for opening a camera with different backends"""
+        for backend in backends:
+            try:
+                cap = cv2.VideoCapture(self._get_open_args(backend), backend)
+                if cap.isOpened():
+                    self._configure_camera(cap)
+                    return cap
+            except Exception:
+                continue
+        return None
+
+    def _configure_camera(self, cap: cv2.VideoCapture):
+        """General camera configuration"""
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+        cap.set(cv2.CAP_PROP_FPS, self.fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if hasattr(self, "_additional_config"):
+            self._additional_config(cap)
+
     @abstractmethod
-    def _open_camera(self) -> Optional[cv2.VideoCapture]:
-        """Initialize and configure the camera capture"""
+    def _get_open_args(self, backend: int) -> Any:
+        """Получить аргументы для открытия камеры"""
 
     @abstractmethod
     def _get_source(self) -> str:
-        """Get human-readable camera identifier"""
+        """Получить идентификатор камеры"""
 
     def run(self):
         """Main thread loop for camera processing"""
@@ -67,11 +93,17 @@ class BaseCameraThread(threading.Thread, ABC):
                     raise RuntimeError(f"Cannot open camera {source}")
 
                 self._process_camera_stream(source)
-
             except Exception as e:
                 self._handle_camera_error(source, e)
             finally:
                 self._release_camera_resources()
+
+    def _open_camera(self) -> Optional[cv2.VideoCapture]:
+        """Открытие камеры с учетом платформы"""
+        backends = self.DEFAULT_BACKENDS.get(
+            "linux" if sys.platform == "linux" else "default"
+        )
+        return self._try_open_camera(backends)
 
     def _process_camera_stream(self, source: str):
         """Continuously read and process frames from camera"""
@@ -122,31 +154,14 @@ class USBCameraThread(BaseCameraThread):
         """
         super().__init__(*args, **kwargs)
 
-    def _open_camera(self) -> Optional[cv2.VideoCapture]:
-        if sys.platform == "linux":
-            attempts = [lambda: cv2.VideoCapture(self.camera_id, cv2.CAP_V4L2)]
-        else:
-            attempts = [
-                lambda: cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW),
-                lambda: cv2.VideoCapture(self.camera_id, cv2.CAP_MSMF),
-            ]
-
-        for attempt in attempts:
-            try:
-                cap = attempt()
-                if cap.isOpened():
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
-                    cap.set(cv2.CAP_PROP_FPS, self.fps)
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-                    return cap
-            except Exception:
-                continue
-        return None
+    def _get_open_args(self, _) -> Any:
+        return self.camera_id
 
     def _get_source(self) -> str:
         return f"USB Camera {self.camera_id}"
+
+    def _additional_config(self, cap: cv2.VideoCapture):
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
 
 
 class IPCameraThread(BaseCameraThread):
@@ -167,6 +182,12 @@ class IPCameraThread(BaseCameraThread):
         super().__init__(*args, **kwargs)
         self.rtsp_url = rtsp_url
 
+    def _get_open_args(self, _) -> Any:
+        return self.rtsp_url
+
+    def _get_source(self) -> str:
+        return self.rtsp_url
+
     def _open_camera(self) -> Optional[cv2.VideoCapture]:
         try:
             cap = cv2.VideoCapture(self.rtsp_url)
@@ -176,6 +197,3 @@ class IPCameraThread(BaseCameraThread):
         except Exception as e:
             self.logger.error(f"Failed to open IP camera {self.rtsp_url}: {e}")
         return None
-
-    def _get_source(self) -> str:
-        return self.rtsp_url
