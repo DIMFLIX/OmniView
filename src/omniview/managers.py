@@ -20,6 +20,12 @@ from .threads import USBCameraThread
 
 
 class BaseCameraManager(ABC):
+    """Базовый менеджер для управления несколькими видеопотоками с камер.
+
+    Обеспечивает общую функциональность для работы с USB и IP-камерами,
+    включая автоматическое переподключение, обработку кадров и отображение в GUI.
+    """
+
     def __init__(
         self,
         show_gui: bool = False,
@@ -32,19 +38,18 @@ class BaseCameraManager(ABC):
         frame_callback: Optional[Callable[[int, Any], None]] = None,
         exit_keys: tuple = (ord("q"), 27),
     ):
-        """
-        Base manager for handling multiple camera streams
+        """Инициализация базового менеджера камер.
 
         Args:
-            show_gui: Display video windows
-            show_camera_id: Adds a caption with the camera ID to the frame
-            max_cameras: Maximum number of cameras to handle
-            frame_width: Desired frame width
-            frame_height: Desired frame height
-            fps: Target frames per second
-            min_uptime: Minimum operational time before reconnecting (seconds)
-            frame_callback: Callback function for frame processing
-            exit_keys: Keyboard keys to exit the application
+            show_gui (bool): Отображать окна с видеопотоками
+            show_camera_id (bool): Показывать ID камеры на кадре
+            max_cameras (int): Максимальное количество камер
+            frame_width (int): Ширина кадра
+            frame_height (int): Высота кадра
+            fps (int): Целевое количество кадров в секунду
+            min_uptime (float): Минимальное время работы перед переподключением (сек)
+            frame_callback (Callable): Функция обработки кадров
+            exit_keys (tuple): Клавиши для выхода из приложения
         """
         self._setup_logging()
 
@@ -68,7 +73,7 @@ class BaseCameraManager(ABC):
             os.environ["QT_QPA_PLATFORM"] = "xcb"
 
     def _setup_logging(self):
-        """Configure logging settings"""
+        """Настройка системы логирования для менеджера."""
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO)
         handler = logging.StreamHandler()
@@ -77,14 +82,25 @@ class BaseCameraManager(ABC):
 
     @abstractmethod
     def _get_available_devices(self) -> List[int]:
-        pass
+        """Абстрактный метод для получения списка доступных устройств.
+
+        Returns:
+            List[int]: Список идентификаторов доступных камер
+        """
 
     @abstractmethod
     def _create_camera_thread(self, camera_id: int) -> threading.Thread:
-        pass
+        """Абстрактный метод для создания потока обработки камеры.
+
+        Args:
+            camera_id (int): Идентификатор камеры
+
+        Returns:
+            threading.Thread: Поток для обработки видеопотока
+        """
 
     def start(self):
-        """Start the camera manager and begin processing"""
+        """Запуск менеджера камер и начало обработки видеопотоков."""
         self.monitor_thread = threading.Thread(
             target=self._monitor_cameras, daemon=True
         )
@@ -92,7 +108,7 @@ class BaseCameraManager(ABC):
         self._main_loop()
 
     def stop(self):
-        """Stop all camera processing and clean up resources"""
+        """Остановка всех процессов и освобождение ресурсов."""
         self.stop_event.set()
 
         for dev_id in list(self.cameras.keys()):
@@ -104,7 +120,7 @@ class BaseCameraManager(ABC):
         self._cleanup_gui_resources()
 
     def _cleanup_gui_resources(self):
-        """Clean up GUI-related resources"""
+        """Очистка ресурсов, связанных с графическим интерфейсом."""
         if not self.show_gui:
             return
 
@@ -117,7 +133,7 @@ class BaseCameraManager(ABC):
         self.active_windows.clear()
 
     def _monitor_cameras(self):
-        """Continuously monitor and update camera connections"""
+        """Мониторинг состояния подключенных камер и управление подключениями."""
         while not self.stop_event.is_set():
             current_devices = self._get_available_devices()
 
@@ -127,26 +143,42 @@ class BaseCameraManager(ABC):
             time.sleep(3)
 
     def _update_camera_connections(self, current_devices: List[int]):
-        """Add or remove cameras based on availability"""
-        # Add newly connected cameras
+        """Обновление списка подключенных камер.
+
+        Args:
+            current_devices (List[int]): Список доступных в данный момент камер
+        """
+        # Добавляем новые подключенные камеры
         for dev_id in current_devices:
             if dev_id not in self.cameras:
                 self._add_camera(dev_id)
 
-        # Remove disconnected cameras
+        # Удаляем отключенные камеры
         for dev_id in list(self.cameras.keys()):
             if self._should_remove_camera(dev_id, current_devices):
                 self._remove_camera(dev_id)
 
     def _should_remove_camera(self, dev_id: int, current_devices: List[int]) -> bool:
-        """Determine if a camera should be removed"""
+        """Проверка необходимости удаления камеры из списка активных.
+
+        Args:
+            dev_id (int): Идентификатор камеры
+            current_devices (List[int]): Список доступных камер
+
+        Returns:
+            bool: True если камеру нужно удалить
+        """
         return (
             dev_id not in current_devices
             and not self.cameras[dev_id]["thread"].is_alive()
         )
 
     def _add_camera(self, dev_id: int):
-        """Initialize and start a new camera thread"""
+        """Добавление новой камеры в список активных.
+
+        Args:
+            dev_id (int): Идентификатор камеры
+        """
         if dev_id in self.cameras:
             return
 
@@ -169,7 +201,11 @@ class BaseCameraManager(ABC):
             self.logger.error(f"Error adding camera {dev_id}: {str(e)}")
 
     def _remove_camera(self, dev_id: int):
-        """Stop and remove a camera thread"""
+        """Удаление камеры из списка активных.
+
+        Args:
+            dev_id (int): Идентификатор камеры
+        """
         if dev_id not in self.cameras:
             return
 
@@ -193,6 +229,14 @@ class BaseCameraManager(ABC):
                 del self.cameras[dev_id]
 
     def _get_window_title(self, dev_id: int) -> str:
+        """Генерация заголовка окна для камеры.
+
+        Args:
+            dev_id (int): Идентификатор камеры
+
+        Returns:
+            str: Заголовок окна
+        """
         camera_type = self.__class__.__name__.replace("CameraManager", "")
         source = (
             self.cameras[dev_id]["source"] if dev_id in self.cameras else str(dev_id)
@@ -200,7 +244,11 @@ class BaseCameraManager(ABC):
         return f"Camera {dev_id} ({camera_type}): {source}"
 
     def process_frames(self) -> Dict[int, Any]:
-        """Process all available frames from the queue"""
+        """Обработка всех доступных кадров из очереди.
+
+        Returns:
+            Dict[int, Any]: Словарь с кадрами (ключ - ID камеры)
+        """
         frames = {}
 
         while not self.frame_queue.empty():
@@ -216,7 +264,12 @@ class BaseCameraManager(ABC):
         return frames
 
     def _update_camera_state(self, dev_id: int, frame: Any):
-        """Update camera state with new frame"""
+        """Обновление состояния камеры новым кадром.
+
+        Args:
+            dev_id (int): Идентификатор камеры
+            frame (Any): Кадр видео
+        """
         self.cameras[dev_id]["last_frame"] = frame
         self.cameras[dev_id]["last_update"] = time.time()
 
@@ -224,7 +277,11 @@ class BaseCameraManager(ABC):
             self.frame_callback(dev_id, frame)
 
     def _add_cached_frames(self, frames: Dict[int, Any]):
-        """Add cached frames from inactive cameras"""
+        """Добавление кэшированных кадров от неактивных камер.
+
+        Args:
+            frames (Dict[int, Any]): Словарь для добавления кадров
+        """
         with self.lock:
             for dev_id in list(self.cameras.keys()):
                 if (
@@ -235,7 +292,7 @@ class BaseCameraManager(ABC):
                     frames[dev_id] = self.cameras[dev_id]["last_frame"]
 
     def _main_loop(self):
-        """Main processing loop"""
+        """Главный цикл обработки видеопотоков."""
         try:
             while not self.stop_event.is_set():
                 try:
@@ -249,7 +306,7 @@ class BaseCameraManager(ABC):
             self.stop()
 
     def _process_frame_iteration(self):
-        """Process one iteration of the main loop"""
+        """Обработка одной итерации главного цикла."""
         frames = self.process_frames()
 
         if self.show_gui:
@@ -259,7 +316,12 @@ class BaseCameraManager(ABC):
             self.stop_event.set()
 
     def _show_camera_id_in_frame(self, frame, camera_id: int):
-        """Adds a caption with the camera number to the frame"""
+        """Добавление ID камеры на кадр.
+
+        Args:
+            frame: Кадр видео
+            camera_id (int): Идентификатор камеры
+        """
         cv2.putText(
             frame,
             f"Camera {camera_id}",
@@ -271,7 +333,11 @@ class BaseCameraManager(ABC):
         )
 
     def _update_gui_windows(self, frames: Dict[int, Any]):
-        """Update all GUI windows with current frames"""
+        """Обновление окон GUI новыми кадрами.
+
+        Args:
+            frames (Dict[int, Any]): Словарь с кадрами
+        """
         for dev_id, frame in frames.items():
             try:
                 window_title = self._get_window_title(dev_id)
@@ -285,7 +351,11 @@ class BaseCameraManager(ABC):
         self._cleanup_inactive_windows(frames.keys())
 
     def _cleanup_inactive_windows(self, active_ids: set):
-        """Remove windows for inactive cameras"""
+        """Очистка окон неактивных камер.
+
+        Args:
+            active_ids (set): Множество ID активных камер
+        """
         for window_title in list(self.active_windows):
             dev_id = int(window_title.split()[1])
             if dev_id not in active_ids:
@@ -297,7 +367,11 @@ class BaseCameraManager(ABC):
                     pass
 
     def _check_exit_condition(self) -> bool:
-        """Check if exit condition is met"""
+        """Проверка условий для выхода из приложения.
+
+        Returns:
+            bool: True если нужно завершить работу
+        """
         if not self.show_gui:
             return False
 
@@ -306,14 +380,14 @@ class BaseCameraManager(ABC):
 
 
 class SequentialCameraMixin:
-    """A mixin that adds sequential camera switching functionality to camera managers.
+    """Миксин, который добавляет функциональность последовательного переключения камер в менеджеры камер.
 
-    This mixin allows cameras to be displayed one by one in a cyclic order,
-    with a configurable switch interval. It's designed to work with camera managers
-    inheriting from `BaseCameraManager`.
+    Этот миксин позволяет отображать камеры одну за другой в циклическом порядке,
+    с настраиваемым интервалом переключения. Он предназначен для работы с менеджерами камер,
+    наследующими от `BaseCameraManager`.
 
-    Requires the host class to implement:
-        Attributes:
+    Требуется, чтобы класс хоста реализовал:
+        Атрибуты:
             - frame_callback: Optional[Callable]
             - stop_event: threading.Event
             - cameras_list: List[int]
@@ -328,13 +402,20 @@ class SequentialCameraMixin:
             - window_title: str
             - switch_interval: float
 
-        Methods:
+        Методы:
             - _get_available_devices()
             - _show_camera_id_in_frame()
     """
 
     def _open_camera(self, camera_id: int) -> Optional[cv2.VideoCapture]:
-        """Open camera with platform-specific parameters."""
+        """Открытие камеры с учетом платформы.
+
+        Args:
+            camera_id (int): Идентификатор камеры
+
+        Returns:
+            Optional[cv2.VideoCapture]: Объект захвата видео или None
+        """
         backends = ["linux"] if sys.platform == "linux" else ["default"]
         for backend in backends:
             for api in BaseCameraThread.DEFAULT_BACKENDS[backend]:
@@ -344,7 +425,7 @@ class SequentialCameraMixin:
         return None
 
     def _sequential_main_loop(self):
-        """Main loop for sequential camera switching"""
+        """Главный цикл для последовательного отображения камер."""
         self.cameras_list = self._get_available_devices()
         if not self.cameras_list:
             self.logger.error("No USB cameras found")
@@ -370,13 +451,20 @@ class SequentialCameraMixin:
             self._cleanup_sequential()
 
     def _check_exit_keys(self):
-        """Handle exit key presses"""
+        """Обработка нажатий клавиш для выхода."""
         key = cv2.waitKey(1)
         if key in self.exit_keys:
             self.stop_event.set()
 
     def _process_camera(self, camera_id: int) -> bool:
-        """Process one camera for switch_interval duration"""
+        """Обработка одной камеры в течение интервала переключения.
+
+        Args:
+            camera_id (int): Идентификатор камеры
+
+        Returns:
+            bool: Успешность обработки
+        """
         self.cap = self._open_camera(camera_id)
         if not self.cap or not self.cap.isOpened():
             return False
@@ -399,14 +487,18 @@ class SequentialCameraMixin:
             self.cap = None
 
     def _configure_camera(self):
-        """Set camera parameters"""
+        """Конфигурация параметров камеры."""
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     def _handle_frame(self, camera_id: int):
-        """Read and process single frame"""
+        """Обработка одного кадра.
+
+        Args:
+            camera_id (int): Идентификатор камеры
+        """
         ret, frame = self.cap.read()
         if not ret:
             return
@@ -420,18 +512,30 @@ class SequentialCameraMixin:
         self._check_exit_keys()
 
     def _display_frame(self, camera_id: int, frame):
-        """Show frame in GUI window"""
+        """Отображение кадра в GUI.
+
+        Args:
+            camera_id (int): Идентификатор камеры
+            frame: Кадр видео
+        """
         if self.show_camera_id:
             self._show_camera_id_in_frame(frame, camera_id)
 
         cv2.imshow(self.window_title, frame)
 
     def _check_switch_time(self, start_time: float) -> bool:
-        """Check if switch interval has elapsed"""
+        """Проверка истечения интервала переключения.
+
+        Args:
+            start_time (float): Время начала отображения
+
+        Returns:
+            bool: True если интервал истек
+        """
         return (time.time() - start_time) >= self.switch_interval
 
     def _cleanup_sequential(self):
-        """Final cleanup for sequential mode"""
+        """Очистка ресурсов последовательного режима."""
         if self.cap and self.cap.isOpened():
             self.cap.release()
         if self.show_gui:
@@ -440,21 +544,20 @@ class SequentialCameraMixin:
 
 
 class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
-    """
-    Manager for handling multiple USB camera streams
+    """Менеджер для работы с несколькими потоками USB-камер
 
     Args:
-        show_gui: Display video windows
-        show_camera_id: Adds a caption with the camera ID to the frame
-        max_cameras: Maximum number of cameras to handle
-        frame_width: Desired frame width
-        frame_height: Desired frame height
-        fps: Target frames per second
-        min_uptime: Minimum operational time before reconnecting (seconds)
-        frame_callback: Callback function for frame processing
-        exit_keys: Keyboard keys to exit the application
-        sequential_mode: Method to show the cameras one by one
-        switch_interval: The time after which the cameras will change. Only works if sequential_mode is selected
+        show_gui: Отображать видеоокна
+        show_camera_id: Добавляет надпись с идентификатором камеры в кадр
+        max_cameras: Максимальное количество камер для обработки
+        frame_width: Желаемая ширина кадра
+        frame_height: Желаемая высота кадра
+        fps: Целевое количество кадров в секунду
+        min_uptime: Минимальное время работы до переподключения (секунды)
+        frame_callback: Функция обратного вызова для обработки кадров
+        exit_keys: Клавиши клавиатуры для выхода из приложения
+        sequential_mode: Метод показа камер по очереди
+        switch_interval: Время, через которое камеры будут меняться. Работает, только если выбран режим sequential_mode
     """
 
     def __init__(
@@ -464,6 +567,12 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         switch_interval: float = 5.0,
         **kwargs,
     ):
+        """Инициализация менеджера USB-камер.
+
+        Args:
+            sequential_mode (bool): Режим последовательного отображения
+            switch_interval (float): Интервал переключения камер (сек)
+        """
         super().__init__(*args, **kwargs)
         self.sequential_mode = sequential_mode
         self.switch_interval = switch_interval
@@ -473,13 +582,18 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         self.window_title = "USB Camera Switcher"
 
     def start(self):
-        """Start camera processing in selected mode"""
+        """Запуск менеджера в выбранном режиме."""
         if self.sequential_mode:
             self._sequential_main_loop()
         else:
             super().start()
 
     def _get_available_devices(self) -> List[int]:
+        """Получение списка доступных USB-камер.
+
+        Returns:
+            List[int]: Список ID доступных камер
+        """
         devices = []
 
         for i in range(self.max_cameras):
@@ -494,6 +608,15 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
     def _create_camera_thread(
         self, camera_id: int, stop_event: threading.Event
     ) -> threading.Thread:
+        """Создание потока для обработки USB-камеры.
+
+        Args:
+            camera_id (int): Идентификатор камеры
+            stop_event (threading.Event): Событие для остановки потока
+
+        Returns:
+            threading.Thread: Поток обработки камеры
+        """
         return USBCameraThread(
             camera_id=camera_id,
             frame_queue=self.frame_queue,
@@ -506,31 +629,49 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
 
 
 class IPCameraManager(BaseCameraManager):
-    """
-    Manager for handling multiple IP camera streams
+    """Менеджер для работы с несколькими потоками IP-камер
 
     Args:
-        rtsp_urls: RTSP stream URLs
-        show_gui: Display video windows
-        max_cameras: Maximum number of cameras to handle
-        frame_width: Desired frame width
-        frame_height: Desired frame height
-        fps: Target frames per second
-        min_uptime: Minimum operational time before reconnecting (seconds)
-        frame_callback: Callback function for frame processing
-        exit_keys: Keyboard keys to exit the application
+        rtsp_urls: URL-адреса RTSP-потоков
+        show_gui: Отображать видеоокна
+        max_cameras: Максимальное количество камер для обработки
+        frame_width: Желаемая ширина кадра
+        frame_height: Желаемая высота кадра
+        fps: Целевое количество кадров в секунду
+        min_uptime: Минимальное время работы до переподключения (секунды)
+        frame_callback: Функция обратного вызова для обработки кадров
+        exit_keys: Клавиши клавиатуры для выхода из приложения
     """
 
     def __init__(self, rtsp_urls: List[str], *args, **kwargs):
+        """Инициализация менеджера IP-камер.
+
+        Args:
+            rtsp_urls (List[str]): Список URL RTSP потоков
+        """
         super().__init__(*args, **kwargs)
         self.rtsp_urls = rtsp_urls
 
     def _get_available_devices(self) -> List[int]:
+        """Получение списка доступных IP-камер.
+
+        Returns:
+            List[int]: Список индексов доступных потоков
+        """
         return list(range(len(self.rtsp_urls)))
 
     def _create_camera_thread(
         self, camera_id: int, stop_event: threading.Event
     ) -> threading.Thread:
+        """Создание потока для обработки IP-камеры.
+
+        Args:
+            camera_id (int): Идентификатор камеры
+            stop_event (threading.Event): Событие для остановки потока
+
+        Returns:
+            threading.Thread: Поток обработки камеры
+        """
         return IPCameraThread(
             rtsp_url=self.rtsp_urls[camera_id],
             camera_id=camera_id,

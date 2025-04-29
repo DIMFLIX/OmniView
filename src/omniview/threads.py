@@ -12,6 +12,8 @@ import cv2
 
 
 class BaseCameraThread(threading.Thread, ABC):
+    """Базовый класс потока для обработки видеопотока с камеры."""
+
     DEFAULT_BACKENDS = {
         "linux": [cv2.CAP_V4L2],
         "default": [cv2.CAP_DSHOW, cv2.CAP_MSMF],
@@ -27,17 +29,16 @@ class BaseCameraThread(threading.Thread, ABC):
         fps: int = 30,
         min_uptime: float = 5.0,
     ):
-        """
-        Base thread for handling a single camera stream
+        """Базовый поток для обработки потока с одной камеры
 
         Args:
-            camera_id: Unique identifier for the camera
-            frame_queue: Queue for sending frames to main thread
-            stop_event: Event to signal thread termination
-            frame_width: Desired frame width
-            frame_height: Desired frame height
-            fps: Target frames per second
-            min_uptime: Minimum operational time before reconnecting (seconds)
+            camera_id: Уникальный идентификатор камеры
+            frame_queue: Очередь для отправки кадров в основной поток
+            stop_event: Событие, сигнализирующее о завершении потока
+            frame_width: Желаемая ширина кадра
+            frame_height: Желаемая высота кадра
+            fps: Целевое количество кадров в секунду
+            min_uptime: Минимальное время работы до переподключения (секунды)
         """
 
         super().__init__()
@@ -56,7 +57,14 @@ class BaseCameraThread(threading.Thread, ABC):
         self.logger = logging.getLogger(f"{self.__class__.__name__}-{camera_id}")
 
     def _try_open_camera(self, backends: list) -> Optional[cv2.VideoCapture]:
-        """A common method for opening a camera with different backends"""
+        """Попытка открыть камеру с использованием различных бэкендов.
+
+        Args:
+            backends (list): Список бэкендов для попытки открытия
+
+        Returns:
+            Optional[cv2.VideoCapture]: Объект захвата видео или None
+        """
         for backend in backends:
             try:
                 cap = cv2.VideoCapture(self._get_open_args(backend), backend)
@@ -68,7 +76,11 @@ class BaseCameraThread(threading.Thread, ABC):
         return None
 
     def _configure_camera(self, cap: cv2.VideoCapture):
-        """General camera configuration"""
+        """Базовая конфигурация параметров камеры.
+
+        Args:
+            cap (cv2.VideoCapture): Объект захвата видео
+        """
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
         cap.set(cv2.CAP_PROP_FPS, self.fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -77,14 +89,25 @@ class BaseCameraThread(threading.Thread, ABC):
 
     @abstractmethod
     def _get_open_args(self, backend: int) -> Any:
-        """Получить аргументы для открытия камеры"""
+        """Абстрактный метод получения аргументов для открытия камеры.
+
+        Args:
+            backend (int): Используемый бэкенд
+
+        Returns:
+            Any: Аргументы для открытия камеры
+        """
 
     @abstractmethod
     def _get_source(self) -> str:
-        """Получить идентификатор камеры"""
+        """Абстрактный метод получения идентификатора источника.
+
+        Returns:
+            str: Идентификатор/описание источника
+        """
 
     def run(self):
-        """Main thread loop for camera processing"""
+        """Главный метод потока для обработки видеопотока."""
         while not self.stop_event.is_set() and self.retry_count < self.max_retries:
             source = self._get_source()
             try:
@@ -99,14 +122,22 @@ class BaseCameraThread(threading.Thread, ABC):
                 self._release_camera_resources()
 
     def _open_camera(self) -> Optional[cv2.VideoCapture]:
-        """Открытие камеры с учетом платформы"""
+        """Открытие камеры с учетом платформы.
+
+        Returns:
+            Optional[cv2.VideoCapture]: Объект захвата видео или None
+        """
         backends = self.DEFAULT_BACKENDS.get(
             "linux" if sys.platform == "linux" else "default"
         )
         return self._try_open_camera(backends)
 
     def _process_camera_stream(self, source: str):
-        """Continuously read and process frames from camera"""
+        """Непрерывное чтение и обработка кадров с камеры.
+
+        Args:
+            source (str): Идентификатор источника
+        """
         self.retry_count = 0
         self.logger.info(f"Camera {source} started")
         start_time = time.time()
@@ -124,7 +155,12 @@ class BaseCameraThread(threading.Thread, ABC):
             self.last_frame_time = time.time()
 
     def _handle_camera_error(self, source: str, error: Exception):
-        """Handle camera errors and schedule reconnection"""
+        """Обработка ошибок камеры и планирование переподключения.
+
+        Args:
+            source (str): Идентификатор источника
+            error (Exception): Произошедшая ошибка
+        """
         self.logger.error(f"Camera {source} error: {str(error)}")
         self.retry_count += 1
         if self.retry_count < self.max_retries:
@@ -132,63 +168,93 @@ class BaseCameraThread(threading.Thread, ABC):
             time.sleep(2.0)
 
     def _release_camera_resources(self):
-        """Clean up camera resources"""
+        """Освобождение ресурсов камеры."""
         if self.cap and self.cap.isOpened():
             self.cap.release()
         self.cap = None
 
 
 class USBCameraThread(BaseCameraThread):
+    """Поток для обработки видеопотока с USB-камеры."""
+
     def __init__(self, *args, **kwargs):
-        """
-        Base thread for handling a single USB camera stream
+        """Базовый поток для обработки потока с одной USB-камеры
 
         Args:
-            camera_id: Unique identifier for the camera
-            frame_queue: Queue for sending frames to main thread
-            stop_event: Event to signal thread termination
-            frame_width: Desired frame width
-            frame_height: Desired frame height
-            fps: Target frames per second
-            min_uptime: Minimum operational time before reconnecting (seconds)
+            camera_id: Уникальный идентификатор камеры
+            frame_queue: Очередь для отправки кадров в основной поток
+            stop_event: Событие, сигнализирующее о завершении потока
+            frame_width: Желаемая ширина кадра
+            frame_height: Желаемая высота кадра
+            fps: Целевое количество кадров в секунду
+            min_uptime: Минимальное время работы до переподключения (секунды)
         """
         super().__init__(*args, **kwargs)
 
     def _get_open_args(self, _) -> Any:
+        """Получение аргументов для открытия USB-камеры.
+
+        Returns:
+            Any: Идентификатор USB-камеры
+        """
         return self.camera_id
 
     def _get_source(self) -> str:
+        """Получение идентификатора USB-камеры.
+
+        Returns:
+            str: Строка идентификатора
+        """
         return f"USB Camera {self.camera_id}"
 
     def _additional_config(self, cap: cv2.VideoCapture):
+        """Дополнительная конфигурация USB-камеры.
+
+        Args:
+            cap (cv2.VideoCapture): Объект захвата видео
+        """
         cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
 
 
 class IPCameraThread(BaseCameraThread):
     def __init__(self, rtsp_url: str, *args, **kwargs):
-        """
-        Base thread for handling a single IP camera stream
+        """Базовый поток для обработки потока с одной IP-камеры
 
         Args:
-            rtsp_url: RTSP stream URL
-            camera_id: Unique identifier for the camera
-            frame_queue: Queue for sending frames to main thread
-            stop_event: Event to signal thread termination
-            frame_width: Desired frame width
-            frame_height: Desired frame height
-            fps: Target frames per second
-            min_uptime: Minimum operational time before reconnecting (seconds)
+            rtsp_url: URL-адрес RTSP-потока
+            camera_id: Уникальный идентификатор камеры
+            frame_queue: Очередь для отправки кадров в основной поток
+            stop_event: Событие, сигнализирующее о завершении потока
+            frame_width: Желаемая ширина кадра
+            frame_height: Желаемая высота кадра
+            fps: Целевое количество кадров в секунду
+            min_uptime: Минимальное время работы до переподключения (секунды)
         """
         super().__init__(*args, **kwargs)
         self.rtsp_url = rtsp_url
 
     def _get_open_args(self, _) -> Any:
+        """Получение аргументов для открытия IP-камеры.
+
+        Returns:
+            Any: URL RTSP потока
+        """
         return self.rtsp_url
 
     def _get_source(self) -> str:
+        """Получение идентификатора IP-камеры.
+
+        Returns:
+            str: URL RTSP потока
+        """
         return self.rtsp_url
 
     def _open_camera(self) -> Optional[cv2.VideoCapture]:
+        """Открытие RTSP потока IP-камеры.
+
+        Returns:
+            Optional[cv2.VideoCapture]: Объект захвата видео или None
+        """
         try:
             cap = cv2.VideoCapture(self.rtsp_url)
             if cap.isOpened():
