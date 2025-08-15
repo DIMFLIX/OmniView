@@ -119,6 +119,13 @@ Welcome:
 - Ideas for improvement
 - Usage examples
 
+## Legal status
+This project is protected by patent. All rights reserved. Use, copying, and distribution are permitted only with the written permission of the copyright holder.
+| Page 1 | Page2 |
+|--------------------|--------------------|
+| <img src="assets/1.png" width="300"> | <img src="assets/1_1.png" width="300"> |
+
+
 ## 📄 License
 The project is distributed under the GNU GPL v3 license.
 See the [LICENSE](LICENSE) file for details.
