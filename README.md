@@ -25,13 +25,13 @@
 
 ---
 
-[About the project](#-about-the-project) • [Installation](#-installation) • [Usage](#-usage) • [API](#-api) • [Legal status](#-legal-status)
+[About the project](#about-project) • [Installation](#installation) • [Usage](#usage) • [API](#api) • [Legal status](#legal-status)
 
 
 <br>
 </div>
 
-# 📝 About the project
+# <a name="about-project"></a>📝 About the project
 A system for simultaneous viewing and processing of streams from multiple cameras (USB/IP) with the ability to integrate into computer vision.
 ## 🚀 Features
 - Support for USB and IP cameras (via RTSP)
@@ -41,11 +41,11 @@ A system for simultaneous viewing and processing of streams from multiple camera
 - Flexible callback system for video processing
 - Ready-to-use GUI for viewing streams
 - Configuration via constructor parameters
-## ⚙️ Installation
+## <a name="installation"></a>⚙️ Installation
 ```bash
 pip install omniview
 ```
-## 🛠️ Usage
+## <a name="usage"></a>🛠️ Usage
 ### 🔌 Basic example for USB cameras
 ```python
 from omniview.managers import USBCameraManager
@@ -94,7 +94,7 @@ if __name__ == "__main__":
 
 ```
 
-## 📚 API
+## <a name="api"></a>📚 API
 **Main methods:**
 - `start()` - starts the camera manager (blocking call)
 - `stop()` - stops all threads correctly
@@ -144,7 +144,7 @@ Contributions are welcome! Here's how you can help:
 - 🔧 Submit pull requests with improvements
 - 📖 Improve documentation
 
-## ®️ Legal status
+## <a name="legal-status"></a>®️ Legal status
 This project is protected by patent. All rights reserved. Use, copying, and distribution are permitted only with the written permission of the copyright holder.
 | Page 1 | Page 2 |
 |--------------------|--------------------|
