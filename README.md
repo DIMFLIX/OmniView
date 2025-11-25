@@ -20,6 +20,15 @@
 	<a href="./README.md">
 		<img src="https://img.shields.io/badge/README-ENG-blue?color=C9CBFF&labelColor=C9CBFF&style=for-the-badge">
 	</a>
+    <br>
+    <br>
+
+---
+
+[About the project](#-about-the-project) • [Installation](#-installation) • [Usage](#-usage) • [API](#-api) • [Legal status](#-legal-status)
+
+
+<br>
 </div>
 
 # 📝 About the project
@@ -112,12 +121,28 @@ if __name__ == "__main__":
 | --------- | --------- | ------- | ----------------- |
 | rtsp_urls | list[str] | []      | List of RTSP URLs |
 
-## 🤝 Project Development
-Welcome:
-- Bug reports
-- Pull requests
-- Ideas for improvement
-- Usage examples
+
+## 🎨 Built With
+
+<div align="center">
+
+**Developed on**
+
+<a href="https://github.com/meowrch">
+<img src="assets/MeowrchBanner.png" alt="Meowrch Linux" width="300"/>
+</a>
+
+*[Meowrch](https://github.com/meowrch/meowrch) — A Linux distribution built for creators and developers*
+
+</div>
+
+## 🤝 Contributing
+
+Contributions are welcome! Here's how you can help:
+
+- 🐛 Report bugs and request features via [Issues](https://github.com/DIMFLIX/OmniView/issues)
+- 🔧 Submit pull requests with improvements
+- 📖 Improve documentation
 
 ## ®️ Legal status
 This project is protected by patent. All rights reserved. Use, copying, and distribution are permitted only with the written permission of the copyright holder.
@@ -125,7 +150,6 @@ This project is protected by patent. All rights reserved. Use, copying, and dist
 |--------------------|--------------------|
 | <img src="assets/1.png" width="300"> | <img src="assets/1_1.png" width="300"> |
 
+## 📝 License
 
-## 📄 License
-The project is distributed under the GNU GPL v3 license.
-See the [LICENSE](LICENSE) file for details.
+This project is licensed under the **GPL-3.0 License** - see the [LICENSE](LICENSE) file for details.
