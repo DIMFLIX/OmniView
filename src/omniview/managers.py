@@ -80,7 +80,9 @@ class BaseCameraManager(ABC):
         pass
 
     @abstractmethod
-    def _create_camera_thread(self, camera_id: int) -> threading.Thread:
+    def _create_camera_thread(
+        self, camera_id: int, stop_event: threading.Event
+    ) -> threading.Thread:
         pass
 
     def start(self):
@@ -481,9 +483,11 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
 
     def _get_available_devices(self) -> List[int]:
         devices = []
+        backend_key = "linux" if sys.platform == "linux" else "default"
+        backend = BaseCameraThread.DEFAULT_BACKENDS[backend_key][0]
 
         for i in range(self.max_cameras):
-            cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+            cap = cv2.VideoCapture(i, backend)
             if cap.isOpened():
                 devices.append(i)
                 cap.release()
