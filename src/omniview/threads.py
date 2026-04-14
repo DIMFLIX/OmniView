@@ -70,6 +70,7 @@ class BaseCameraThread(threading.Thread, ABC):
     def _configure_camera(self, cap: cv2.VideoCapture):
         """General camera configuration"""
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
         cap.set(cv2.CAP_PROP_FPS, self.fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if hasattr(self, "_additional_config"):
@@ -192,7 +193,7 @@ class IPCameraThread(BaseCameraThread):
         try:
             cap = cv2.VideoCapture(self.rtsp_url)
             if cap.isOpened():
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self._configure_camera(cap)
                 return cap
         except Exception as e:
             self.logger.error(f"Failed to open IP camera {self.rtsp_url}: {e}")
