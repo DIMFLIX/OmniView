@@ -14,18 +14,22 @@ Unit-тесты для модуля omniview.threads
 import queue
 import threading
 import time
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
+from unittest.mock import call
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 import pytest
 
-from src.omniview.threads import BaseCameraThread, IPCameraThread, USBCameraThread
-
+from src.omniview.threads import BaseCameraThread
+from src.omniview.threads import IPCameraThread
+from src.omniview.threads import USBCameraThread
 
 # ──────────────────────────────────────────────
 #  Инициализация и хранение параметров
 # ──────────────────────────────────────────────
+
 
 class TestUSBCameraThreadInit:
     """Тесты инициализации USBCameraThread."""
@@ -102,6 +106,7 @@ class TestIPCameraThreadInit:
 #  Идентификация камеры
 # ──────────────────────────────────────────────
 
+
 class TestCameraIdentification:
     """Тесты _get_source и _get_open_args."""
 
@@ -136,6 +141,7 @@ class TestCameraIdentification:
 # ──────────────────────────────────────────────
 #  Конфигурирование камеры
 # ──────────────────────────────────────────────
+
 
 class TestCameraConfiguration:
     """Тесты _configure_camera и _additional_config."""
@@ -177,8 +183,10 @@ class TestCameraConfiguration:
     def test_ip_thread_has_no_additional_config(self, stop_event, frame_queue):
         """IP-камера не должна иметь метод _additional_config."""
         thread = IPCameraThread(
-            rtsp_url="rtsp://x", camera_id=0,
-            frame_queue=frame_queue, stop_event=stop_event,
+            rtsp_url="rtsp://x",
+            camera_id=0,
+            frame_queue=frame_queue,
+            stop_event=stop_event,
         )
         assert not hasattr(thread, "_additional_config")
 
@@ -186,6 +194,7 @@ class TestCameraConfiguration:
 # ──────────────────────────────────────────────
 #  Открытие камеры (_try_open_camera)
 # ──────────────────────────────────────────────
+
 
 class TestTryOpenCamera:
     """Тесты перебора бэкендов при открытии камеры."""
@@ -248,6 +257,7 @@ class TestTryOpenCamera:
 #  IP-камера: _open_camera с RTSP
 # ──────────────────────────────────────────────
 
+
 class TestIPCameraOpen:
     """Тесты открытия IP-камеры напрямую через RTSP URL."""
 
@@ -295,12 +305,11 @@ class TestIPCameraOpen:
 #  Освобождение ресурсов
 # ──────────────────────────────────────────────
 
+
 class TestReleaseResources:
     """Тесты _release_camera_resources."""
 
-    def test_releases_opened_capture(
-        self, stop_event, frame_queue, mock_video_capture
-    ):
+    def test_releases_opened_capture(self, stop_event, frame_queue, mock_video_capture):
         """Открытый capture должен быть освобождён."""
         thread = USBCameraThread(
             camera_id=0, frame_queue=frame_queue, stop_event=stop_event
@@ -336,6 +345,7 @@ class TestReleaseResources:
 # ──────────────────────────────────────────────
 #  Обработка ошибок и повторные подключения
 # ──────────────────────────────────────────────
+
 
 class TestHandleCameraError:
     """Тесты _handle_camera_error."""
@@ -374,10 +384,33 @@ class TestHandleCameraError:
             thread._handle_camera_error("USB Camera 0", RuntimeError("fail"))
         mock_sleep.assert_called_once_with(2.0)
 
+    def test_no_sleep_when_max_retries_is_zero(self, stop_event, frame_queue):
+        """При max_retries=0 _handle_camera_error не вызывает sleep."""
+        thread = USBCameraThread(
+            camera_id=0, frame_queue=frame_queue, stop_event=stop_event
+        )
+        thread.max_retries = 0
+
+        with patch("time.sleep") as mock_sleep:
+            thread._handle_camera_error("USB Camera 0", RuntimeError("fail"))
+            mock_sleep.assert_not_called()
+
+    def test_run_skips_open_camera_when_max_retries_is_zero(self, stop_event, frame_queue):
+        """При max_retries=0 run() не вызывает _open_camera."""
+        thread = USBCameraThread(
+            camera_id=0, frame_queue=frame_queue, stop_event=stop_event
+        )
+        thread.max_retries = 0
+
+        with patch.object(thread, "_open_camera") as mock_open:
+            thread.run()
+            mock_open.assert_not_called()
+
 
 # ──────────────────────────────────────────────
 #  Обработка видеопотока (_process_camera_stream)
 # ──────────────────────────────────────────────
+
 
 class TestProcessCameraStream:
     """Тесты чтения кадров и помещения их в очередь."""
@@ -406,9 +439,7 @@ class TestProcessCameraStream:
 
         assert frame_queue.qsize() >= 3
 
-    def test_failed_read_after_min_uptime_breaks_loop(
-        self, stop_event, frame_queue
-    ):
+    def test_failed_read_after_min_uptime_breaks_loop(self, stop_event, frame_queue):
         """Неудачное чтение после min_uptime прерывает цикл."""
         thread = USBCameraThread(
             camera_id=0,
@@ -428,7 +459,9 @@ class TestProcessCameraStream:
     def test_resets_retry_count_on_stream_start(self, stop_event, frame_queue):
         """retry_count сбрасывается при успешном старте потока."""
         thread = USBCameraThread(
-            camera_id=0, frame_queue=frame_queue, stop_event=stop_event,
+            camera_id=0,
+            frame_queue=frame_queue,
+            stop_event=stop_event,
             min_uptime=0.0,
         )
         thread.retry_count = 2
@@ -444,6 +477,7 @@ class TestProcessCameraStream:
 # ──────────────────────────────────────────────
 #  Жизненный цикл потока (run)
 # ──────────────────────────────────────────────
+
 
 class TestThreadRunLifecycle:
     """Тесты метода run() — полный цикл работы потока."""
@@ -465,8 +499,9 @@ class TestThreadRunLifecycle:
             camera_id=0, frame_queue=frame_queue, stop_event=stop_event
         )
 
-        with patch.object(thread, "_open_camera", return_value=None), \
-             patch("time.sleep"):
+        with patch.object(thread, "_open_camera", return_value=None), patch(
+            "time.sleep"
+        ):
             thread.run()
 
         assert thread.retry_count >= thread.max_retries
@@ -491,8 +526,9 @@ class TestThreadRunLifecycle:
 
         mock_video_capture.read.side_effect = RuntimeError("read failed")
 
-        with patch.object(thread, "_open_camera", side_effect=side_effect_open), \
-             patch("time.sleep"):
+        with patch.object(thread, "_open_camera", side_effect=side_effect_open), patch(
+            "time.sleep"
+        ):
             thread.run()
 
         # После выхода cap должен быть None (ресурсы освобождены)
@@ -502,6 +538,7 @@ class TestThreadRunLifecycle:
 # ──────────────────────────────────────────────
 #  DEFAULT_BACKENDS
 # ──────────────────────────────────────────────
+
 
 class TestDefaultBackends:
     """Тесты словаря бэкендов по умолчанию."""
@@ -521,15 +558,14 @@ class TestDefaultBackends:
 #  Очередь кадров: граничные случаи
 # ──────────────────────────────────────────────
 
+
 class TestFrameQueueBehavior:
     """Тесты поведения потока при переполненной очереди."""
 
     def test_frame_put_into_specific_queue(self, stop_event, fake_frame):
         """Кадры попадают именно в ту очередь, которая передана при создании."""
         q = queue.Queue(maxsize=5)
-        thread = USBCameraThread(
-            camera_id=7, frame_queue=q, stop_event=stop_event
-        )
+        thread = USBCameraThread(camera_id=7, frame_queue=q, stop_event=stop_event)
 
         call_count = 0
 
@@ -558,9 +594,7 @@ class TestFrameQueueBehavior:
     def test_frame_contains_correct_numpy_array(self, stop_event, fake_frame):
         """Кадр в очереди — это numpy-массив с правильной размерностью."""
         q = queue.Queue(maxsize=5)
-        thread = USBCameraThread(
-            camera_id=0, frame_queue=q, stop_event=stop_event
-        )
+        thread = USBCameraThread(camera_id=0, frame_queue=q, stop_event=stop_event)
 
         call_count = 0
 
