@@ -38,6 +38,7 @@ A system for simultaneous viewing and processing of streams from multiple camera
 - Automatic reconnection in case of connection failure
 - Customizable camera parameters (resolution, FPS)
 - Multithreaded frame processing
+- Hardware-accelerated decoding (D3D11 on Windows, VAAPI on Linux) with automatic software fallback
 - Flexible callback system for video processing
 - Ready-to-use GUI for viewing streams
 - Configuration via constructor parameters
@@ -112,6 +113,7 @@ if __name__ == "__main__":
 | min_uptime      | float    | 5.0           | Min. uptime (sec)                                                                       |
 | frame_callback  | function | None          | Callback for frame processing                                                           |
 | exit_keys       | tuple    | (ord('q'),27) | exit keys                                                                               |
+| hw_acceleration | bool     | True          | Use GPU video decoding when available (D3D11/VAAPI); falls back to software             |
 | sequential_mode | bool     | False         | Method to show the cameras one by one                                                   |
 | switch_interval | float    | 5.0           | The time after which the cameras will change. Only works if sequential_mode is selected |
 

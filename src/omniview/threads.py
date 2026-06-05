@@ -10,6 +10,52 @@ from typing import Optional
 
 import cv2
 
+# Capture backends that honor the (open-only) CAP_PROP_HW_ACCELERATION property.
+# Other backends (e.g. V4L2, DSHOW) ignore or reject extra params, so the
+# acceleration params must not be passed to them.
+HW_ACCEL_BACKENDS = (
+    cv2.CAP_FFMPEG,
+    cv2.CAP_GSTREAMER,
+    cv2.CAP_MSMF,
+    cv2.CAP_INTEL_MFX,
+)
+
+# Human-readable names for the negotiated cv2.VIDEO_ACCELERATION_* values.
+_HW_ACCEL_NAMES = {
+    cv2.VIDEO_ACCELERATION_NONE: "none (software)",
+    cv2.VIDEO_ACCELERATION_ANY: "any",
+    cv2.VIDEO_ACCELERATION_D3D11: "d3d11",
+    cv2.VIDEO_ACCELERATION_VAAPI: "vaapi",
+    cv2.VIDEO_ACCELERATION_MFX: "mfx",
+}
+# DRM (Raspberry Pi / V4L2 M2M) only exists in newer OpenCV builds.
+if hasattr(cv2, "VIDEO_ACCELERATION_DRM"):
+    _HW_ACCEL_NAMES[cv2.VIDEO_ACCELERATION_DRM] = "drm"
+
+
+def supports_hw_acceleration(backend: int) -> bool:
+    """Return True if the capture backend honors CAP_PROP_HW_ACCELERATION."""
+    return backend in HW_ACCEL_BACKENDS
+
+
+def build_hw_accel_params(backend: int, enabled: bool) -> list:
+    """Build VideoCapture open params requesting hardware acceleration.
+
+    Uses VIDEO_ACCELERATION_ANY so OpenCV picks the platform-appropriate API
+    (D3D11 on Windows, VAAPI on Linux, ...) and transparently falls back to
+    software decoding when no accelerator is available. Returns an empty list
+    when acceleration is disabled or the backend does not support the property,
+    so callers can use the plain VideoCapture constructor instead.
+    """
+    if enabled and supports_hw_acceleration(backend):
+        return [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY]
+    return []
+
+
+def hw_acceleration_name(value: float) -> str:
+    """Map a negotiated CAP_PROP_HW_ACCELERATION value to a readable name."""
+    return _HW_ACCEL_NAMES.get(int(value), f"unknown ({int(value)})")
+
 
 class BaseCameraThread(threading.Thread, ABC):
     DEFAULT_BACKENDS = {
@@ -26,6 +72,7 @@ class BaseCameraThread(threading.Thread, ABC):
         frame_height: int = 480,
         fps: int = 30,
         min_uptime: float = 5.0,
+        hw_acceleration: bool = True,
     ):
         """
         Base thread for handling a single camera stream
@@ -38,6 +85,8 @@ class BaseCameraThread(threading.Thread, ABC):
             frame_height: Desired frame height
             fps: Target frames per second
             min_uptime: Minimum operational time before reconnecting (seconds)
+            hw_acceleration: Request GPU-accelerated decoding on capable
+                backends (FFMPEG/GStreamer/MSMF/MFX); falls back to software
         """
 
         super().__init__()
@@ -48,6 +97,7 @@ class BaseCameraThread(threading.Thread, ABC):
         self.frame_height = frame_height
         self.fps = fps
         self.min_uptime = min_uptime
+        self.hw_acceleration = hw_acceleration
 
         self.cap: cv2.VideoCapture | None = None
         self.last_frame_time = 0
@@ -59,13 +109,31 @@ class BaseCameraThread(threading.Thread, ABC):
         """A common method for opening a camera with different backends"""
         for backend in backends:
             try:
-                cap = cv2.VideoCapture(self._get_open_args(backend), backend)
+                cap = self._create_capture(self._get_open_args(backend), backend)
                 if cap.isOpened():
                     self._configure_camera(cap)
+                    self._log_acceleration(cap, backend)
                     return cap
             except Exception:
                 continue
         return None
+
+    def _create_capture(self, source: Any, backend: int) -> cv2.VideoCapture:
+        """Open a VideoCapture, requesting HW acceleration on capable backends."""
+        params = build_hw_accel_params(backend, self.hw_acceleration)
+        if params:
+            return cv2.VideoCapture(source, backend, params)
+        return cv2.VideoCapture(source, backend)
+
+    def _log_acceleration(self, cap: cv2.VideoCapture, backend: int):
+        """Log the acceleration mode OpenCV negotiated for an opened capture."""
+        if not (self.hw_acceleration and supports_hw_acceleration(backend)):
+            return
+        try:
+            mode = hw_acceleration_name(cap.get(cv2.CAP_PROP_HW_ACCELERATION))
+        except Exception:
+            return
+        self.logger.info(f"Camera {self._get_source()} hardware acceleration: {mode}")
 
     def _configure_camera(self, cap: cv2.VideoCapture):
         """General camera configuration"""
@@ -190,11 +258,35 @@ class IPCameraThread(BaseCameraThread):
         return self.rtsp_url
 
     def _open_camera(self) -> Optional[cv2.VideoCapture]:
-        try:
-            cap = cv2.VideoCapture(self.rtsp_url)
-            if cap.isOpened():
+        # Prefer FFMPEG with hardware acceleration (best for H.264/H.265 RTSP
+        # decoding), then fall back to plain FFMPEG, then auto-detected backend.
+        attempts = []
+        if self.hw_acceleration:
+            attempts.append(
+                (
+                    cv2.CAP_FFMPEG,
+                    [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY],
+                )
+            )
+        attempts.append((cv2.CAP_FFMPEG, None))
+        attempts.append((cv2.CAP_ANY, None))
+
+        for backend, params in attempts:
+            try:
+                if params is not None:
+                    cap = cv2.VideoCapture(self.rtsp_url, backend, params)
+                else:
+                    cap = cv2.VideoCapture(self.rtsp_url, backend)
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to open IP camera {self.rtsp_url} (backend={backend}): {e}"
+                )
+                continue
+
+            if cap is not None and cap.isOpened():
                 self._configure_camera(cap)
+                self._log_acceleration(cap, backend)
                 return cap
-        except Exception as e:
-            self.logger.error(f"Failed to open IP camera {self.rtsp_url}: {e}")
+            if cap is not None:
+                cap.release()
         return None

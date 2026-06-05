@@ -17,6 +17,7 @@ import cv2
 from .threads import BaseCameraThread
 from .threads import IPCameraThread
 from .threads import USBCameraThread
+from .threads import build_hw_accel_params
 
 
 class BaseCameraManager(ABC):
@@ -31,6 +32,7 @@ class BaseCameraManager(ABC):
         min_uptime: float = 5.0,
         frame_callback: Optional[Callable[[int, Any], None]] = None,
         exit_keys: tuple = (ord("q"), 27),
+        hw_acceleration: bool = True,
     ):
         """
         Base manager for handling multiple camera streams
@@ -45,6 +47,8 @@ class BaseCameraManager(ABC):
             min_uptime: Minimum operational time before reconnecting (seconds)
             frame_callback: Callback function for frame processing
             exit_keys: Keyboard keys to exit the application
+            hw_acceleration: Request GPU-accelerated decoding when available
+                (uses D3D11 on Windows, VAAPI on Linux); falls back to software
         """
         self._setup_logging()
 
@@ -57,6 +61,7 @@ class BaseCameraManager(ABC):
         self.min_uptime = min_uptime
         self.frame_callback = frame_callback
         self.exit_keys = exit_keys
+        self.hw_acceleration = hw_acceleration
 
         self.active_windows = set()
         self.lock = threading.Lock()
@@ -65,7 +70,10 @@ class BaseCameraManager(ABC):
         self.frame_queue = queue.Queue(maxsize=self.max_cameras * 2)
 
         if self.show_gui and sys.platform == "linux":
-            os.environ["QT_QPA_PLATFORM"] = "xcb"
+            # Force the xcb (X11/XWayland) Qt plugin bundled with opencv-python
+            # wheels, which usually lack a native Wayland plugin. setdefault lets
+            # users with a Wayland-capable Qt build override it via the env.
+            os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
     def _setup_logging(self):
         """Configure logging settings"""
@@ -325,6 +333,7 @@ class SequentialCameraMixin:
             - frame_width: int
             - frame_height: int
             - fps: int
+            - hw_acceleration: bool
             - show_gui: bool
             - show_camera_id: bool
             - window_title: str
@@ -340,7 +349,11 @@ class SequentialCameraMixin:
         backends = ["linux"] if sys.platform == "linux" else ["default"]
         for backend in backends:
             for api in BaseCameraThread.DEFAULT_BACKENDS[backend]:
-                cap = cv2.VideoCapture(camera_id, api)
+                params = build_hw_accel_params(api, self.hw_acceleration)
+                if params:
+                    cap = cv2.VideoCapture(camera_id, api, params)
+                else:
+                    cap = cv2.VideoCapture(camera_id, api)
                 if cap.isOpened():
                     return cap
         return None
@@ -455,6 +468,7 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         min_uptime: Minimum operational time before reconnecting (seconds)
         frame_callback: Callback function for frame processing
         exit_keys: Keyboard keys to exit the application
+        hw_acceleration: Request GPU-accelerated decoding when available
         sequential_mode: Method to show the cameras one by one
         switch_interval: The time after which the cameras will change. Only works if sequential_mode is selected
     """
@@ -506,6 +520,7 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
             frame_height=self.frame_height,
             fps=self.fps,
             min_uptime=self.min_uptime,
+            hw_acceleration=self.hw_acceleration,
         )
 
 
@@ -523,6 +538,7 @@ class IPCameraManager(BaseCameraManager):
         min_uptime: Minimum operational time before reconnecting (seconds)
         frame_callback: Callback function for frame processing
         exit_keys: Keyboard keys to exit the application
+        hw_acceleration: Request GPU-accelerated decoding when available
     """
 
     def __init__(self, rtsp_urls: List[str], *args, **kwargs):
@@ -544,4 +560,5 @@ class IPCameraManager(BaseCameraManager):
             frame_height=self.frame_height,
             fps=self.fps,
             min_uptime=self.min_uptime,
+            hw_acceleration=self.hw_acceleration,
         )

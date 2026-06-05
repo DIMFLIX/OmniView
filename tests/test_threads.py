@@ -25,6 +25,9 @@ import pytest
 from src.omniview.threads import BaseCameraThread
 from src.omniview.threads import IPCameraThread
 from src.omniview.threads import USBCameraThread
+from src.omniview.threads import build_hw_accel_params
+from src.omniview.threads import hw_acceleration_name
+from src.omniview.threads import supports_hw_acceleration
 
 # ──────────────────────────────────────────────
 #  Инициализация и хранение параметров
@@ -395,7 +398,9 @@ class TestHandleCameraError:
             thread._handle_camera_error("USB Camera 0", RuntimeError("fail"))
             mock_sleep.assert_not_called()
 
-    def test_run_skips_open_camera_when_max_retries_is_zero(self, stop_event, frame_queue):
+    def test_run_skips_open_camera_when_max_retries_is_zero(
+        self, stop_event, frame_queue
+    ):
         """При max_retries=0 run() не вызывает _open_camera."""
         thread = USBCameraThread(
             camera_id=0, frame_queue=frame_queue, stop_event=stop_event
@@ -616,3 +621,126 @@ class TestFrameQueueBehavior:
         cam_id, frame = q.get_nowait()
         assert isinstance(frame, np.ndarray)
         assert frame.shape == (480, 640, 3)
+
+
+# ──────────────────────────────
+#  Аппаратное ускорение: параметры и хелперы
+# ──────────────────────────────
+
+
+class TestHardwareAccelerationParams:
+    """Тесты build_hw_accel_params и вспомогательных функций."""
+
+    def test_default_enabled(self, stop_event, frame_queue):
+        """По умолчанию аппаратное ускорение включено."""
+        thread = USBCameraThread(
+            camera_id=0, frame_queue=frame_queue, stop_event=stop_event
+        )
+        assert thread.hw_acceleration is True
+
+    def test_can_be_disabled(self, stop_event, frame_queue):
+        """Аппаратное ускорение можно отключить."""
+        thread = USBCameraThread(
+            camera_id=0,
+            frame_queue=frame_queue,
+            stop_event=stop_event,
+            hw_acceleration=False,
+        )
+        assert thread.hw_acceleration is False
+
+    def test_build_params_for_ffmpeg(self):
+        """Для FFMPEG возвращаются параметры HW-ускорения."""
+        params = build_hw_accel_params(cv2.CAP_FFMPEG, enabled=True)
+        assert params == [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY]
+
+    def test_build_params_empty_for_v4l2(self):
+        """Для V4L2 (не HW-capable) параметры не передаются."""
+        assert build_hw_accel_params(cv2.CAP_V4L2, enabled=True) == []
+
+    def test_build_params_empty_when_disabled(self):
+        """При отключённом ускорении параметры пусты даже для FFMPEG."""
+        assert build_hw_accel_params(cv2.CAP_FFMPEG, enabled=False) == []
+
+    def test_supports_hw_acceleration(self):
+        """HW-capable бэкенды распознаются корректно."""
+        assert supports_hw_acceleration(cv2.CAP_FFMPEG) is True
+        assert supports_hw_acceleration(cv2.CAP_MSMF) is True
+        assert supports_hw_acceleration(cv2.CAP_V4L2) is False
+
+    def test_hw_acceleration_name_known(self):
+        """Известные режимы преобразуются в читаемые имена."""
+        assert hw_acceleration_name(cv2.VIDEO_ACCELERATION_VAAPI) == "vaapi"
+        assert hw_acceleration_name(cv2.VIDEO_ACCELERATION_NONE) == "none (software)"
+
+    def test_hw_acceleration_name_unknown(self):
+        """Неизвестное значение не падает, а помечается unknown."""
+        assert "unknown" in hw_acceleration_name(99999)
+
+
+# ──────────────────────────────
+#  IP-камера: порядок попыток открытия
+# ──────────────────────────────
+
+
+class TestIPCameraHWOpen:
+    """Тесты _open_camera с аппаратным ускорением и fallback."""
+
+    def test_first_attempt_uses_ffmpeg_with_hw_params(
+        self, stop_event, frame_queue, mock_video_capture
+    ):
+        """Первая попытка — FFMPEG с параметрами HW-ускорения."""
+        thread = IPCameraThread(
+            rtsp_url="rtsp://x",
+            camera_id=0,
+            frame_queue=frame_queue,
+            stop_event=stop_event,
+        )
+        with patch("cv2.VideoCapture", return_value=mock_video_capture) as mock_vc:
+            cap = thread._open_camera()
+
+        assert cap is mock_video_capture
+        first_call = mock_vc.call_args_list[0]
+        assert first_call.args[0] == "rtsp://x"
+        assert first_call.args[1] == cv2.CAP_FFMPEG
+        assert cv2.CAP_PROP_HW_ACCELERATION in first_call.args[2]
+        assert cv2.VIDEO_ACCELERATION_ANY in first_call.args[2]
+
+    def test_falls_back_to_plain_ffmpeg(self, stop_event, frame_queue):
+        """Если HW-открытие не удалось — fallback на обычный FFMPEG."""
+        closed = MagicMock()
+        closed.isOpened.return_value = False
+        opened = MagicMock()
+        opened.isOpened.return_value = True
+
+        thread = IPCameraThread(
+            rtsp_url="rtsp://x",
+            camera_id=0,
+            frame_queue=frame_queue,
+            stop_event=stop_event,
+        )
+        with patch("cv2.VideoCapture", side_effect=[closed, opened]) as mock_vc:
+            cap = thread._open_camera()
+
+        assert cap is opened
+        # Вторая попытка — FFMPEG без параметров (2 аргумента).
+        second_call = mock_vc.call_args_list[1]
+        assert len(second_call.args) == 2
+        assert second_call.args[1] == cv2.CAP_FFMPEG
+
+    def test_disabled_skips_hw_attempt(
+        self, stop_event, frame_queue, mock_video_capture
+    ):
+        """При hw_acceleration=False первая попытка без HW-параметров."""
+        thread = IPCameraThread(
+            rtsp_url="rtsp://x",
+            camera_id=0,
+            frame_queue=frame_queue,
+            stop_event=stop_event,
+            hw_acceleration=False,
+        )
+        with patch("cv2.VideoCapture", return_value=mock_video_capture) as mock_vc:
+            thread._open_camera()
+
+        first_call = mock_vc.call_args_list[0]
+        assert len(first_call.args) == 2  # без params
+        assert first_call.args[1] == cv2.CAP_FFMPEG

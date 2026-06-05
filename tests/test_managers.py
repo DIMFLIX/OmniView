@@ -18,6 +18,7 @@ Unit-тесты для модуля omniview.managers
   - Интеграция callback-механизма с менеджером
 """
 
+import os
 import queue
 import threading
 import time
@@ -99,7 +100,9 @@ class TestUSBCameraManagerInit:
         assert mgr.switch_interval == 5.0
 
     def test_custom_parameters(self):
-        cb = lambda cam_id, frame: None
+        def cb(cam_id, frame):
+            return None
+
         mgr = USBCameraManager(
             show_gui=True,
             show_camera_id=True,
@@ -777,3 +780,61 @@ class TestSequentialMainLoop:
 
         # Должны были пройти камеры циклично: 0,1,2,0,1,2
         assert call_log == [0, 1, 2, 0, 1, 2]
+
+
+# ──────────────────────────────
+#  Проброс hw_acceleration в потоки
+# ──────────────────────────────
+
+
+class TestHardwareAccelerationManager:
+    """Тесты передачи флага hw_acceleration в потоки камер."""
+
+    def test_default_enabled_usb(self, usb_manager):
+        """По умолчанию ускорение включено в USB-менеджере."""
+        assert usb_manager.hw_acceleration is True
+
+    def test_default_enabled_ip(self, ip_manager):
+        """По умолчанию ускорение включено в IP-менеджере."""
+        assert ip_manager.hw_acceleration is True
+
+    def test_usb_thread_inherits_disabled_flag(self):
+        """USB-поток получает hw_acceleration=False от менеджера."""
+        mgr = USBCameraManager(hw_acceleration=False)
+        thread = mgr._create_camera_thread(0, threading.Event())
+        assert thread.hw_acceleration is False
+
+    def test_usb_thread_inherits_enabled_flag(self, usb_manager):
+        """USB-поток по умолчанию получает hw_acceleration=True."""
+        thread = usb_manager._create_camera_thread(0, threading.Event())
+        assert thread.hw_acceleration is True
+
+    def test_ip_thread_inherits_flag(self):
+        """IP-поток получает флаг ускорения от менеджера."""
+        mgr = IPCameraManager(rtsp_urls=["rtsp://x"], hw_acceleration=False)
+        thread = mgr._create_camera_thread(0, threading.Event())
+        assert thread.hw_acceleration is False
+
+
+# ──────────────────────────────
+#  Выбор Qt-платформы для GUI (Wayland/X11)
+# ──────────────────────────────
+
+
+class TestQtPlatformSelection:
+    """Тесты выбора QT_QPA_PLATFORM на Linux при show_gui=True."""
+
+    def test_does_not_overwrite_existing_platform(self):
+        """Не перезаписывает заданный пользователем QT_QPA_PLATFORM (например, wayland)."""
+        with patch("sys.platform", "linux"), patch.dict(
+            os.environ, {"QT_QPA_PLATFORM": "wayland"}
+        ):
+            USBCameraManager(show_gui=True)
+            assert os.environ["QT_QPA_PLATFORM"] == "wayland"
+
+    def test_defaults_to_xcb_when_unset(self):
+        """Если переменная не задана — устанавливается xcb (X11/XWayland)."""
+        with patch("sys.platform", "linux"), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("QT_QPA_PLATFORM", None)
+            USBCameraManager(show_gui=True)
+            assert os.environ.get("QT_QPA_PLATFORM") == "xcb"

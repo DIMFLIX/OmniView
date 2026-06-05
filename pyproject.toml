@@ -1,6 +1,6 @@
 [project]
 name = "omniview"
-version = "1.2.0"
+version = "1.3.0"
 description = "Receiving video stream from multiple cameras (usb/ip) for further processing"
 authors = [
   {name = "DIMFLIX", email = "dimflix.official@gmail.com"},
