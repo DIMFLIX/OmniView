@@ -40,6 +40,15 @@ dependencies = [
     "opencv-python>=4.11.0.86",
 ]
 
+[project.optional-dependencies]
+gui = [
+    "PyQt6>=6.7.1",
+    "numpy>=1.24.4",
+]
+
+[project.scripts]
+omniview-dashboard = "omniview.gui.main:main"
+
 [project.urls]
 Homepage = "https://github.com/DIMFLIX/OmniView"
 Documentation = "https://github.com/DIMFLIX/OmniView/wiki"
@@ -61,3 +70,10 @@ tests = ["B102", "B101", "B301"]
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "numpy>=1.24.4",
+    "pyqt6>=6.7.1",
+    "ruff>=0.15.0",
+]
