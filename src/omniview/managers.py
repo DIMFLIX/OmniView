@@ -233,6 +233,11 @@ class BaseCameraManager(ABC):
 
     def _update_camera_state(self, dev_id: int, frame: Any):
         """Update camera state with new frame"""
+        if dev_id not in self.cameras:
+            # Frame from a multiplexed camera — scheduler manages its state
+            if self.frame_callback:
+                self.frame_callback(dev_id, frame)
+            return
         self.cameras[dev_id]["last_frame"] = frame
         self.cameras[dev_id]["last_update"] = time.time()
 
