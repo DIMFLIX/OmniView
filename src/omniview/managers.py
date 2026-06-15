@@ -195,7 +195,15 @@ class BaseCameraManager(ABC):
             self.cameras[dev_id]["stop_event"].set()
             self.cameras[dev_id]["thread"].join(timeout=1.0)
 
-            if self.show_gui:
+            # HighGUI (Qt) is not thread-safe: destroying a window off the
+            # main thread triggers "QObject::killTimer/startTimer: Timers
+            # cannot be (stopped|started) from another thread" and can
+            # SIGSEGV. _remove_camera runs both on the main thread (stop())
+            # and on the background _monitor_cameras thread (hot-plug
+            # removal), so only touch GUI when on the main thread. Windows
+            # orphaned by a background removal are reaped by the main loop's
+            # _cleanup_inactive_windows / _cleanup_gui_resources.
+            if self.show_gui and threading.current_thread() is threading.main_thread():
                 window_title = self._get_window_title(dev_id)
                 if window_title in self.active_windows:
                     cv2.destroyWindow(window_title)
@@ -566,6 +574,33 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
             # When multiplex is active, poll at 50 ms for responsive
             # rotation. Otherwise 3 s is fine (just hot-plug detection).
             time.sleep(0.05 if self._multiplex_scheduler is not None else 3)
+
+    def process_frames(self) -> Dict[int, Any]:
+        """Drain queued frames, then merge multiplex-scheduler frames.
+
+        Multiplexed cameras are owned by the ``MultiplexScheduler``, not
+        ``self.cameras``, so the base-class queue drain + 5 s cache never
+        keeps their GUI windows alive between the intermittent frames the
+        scheduler emits (only ``slots`` cameras stream at once; parked
+        cameras emit nothing). Without this merge each multiplexed window is
+        created and destroyed on alternating main-loop iterations, so the
+        windows appear to open and instantly close.
+
+        Merging the scheduler's last-known frame for every multiplexed
+        camera keeps one stable window per camera (live for active cams,
+        parked for the rest), mirroring what ``ManagerBridge`` already does
+        for the dashboard. Fresh frames drained from the queue this tick
+        take precedence over the scheduler's stored copy.
+        """
+        frames = super().process_frames()
+
+        scheduler = self._multiplex_scheduler
+        if scheduler is not None:
+            for dev_id, frame in scheduler.get_all_frames().items():
+                if frame is not None and dev_id not in frames:
+                    frames[dev_id] = frame
+
+        return frames
 
     def _get_available_devices(self) -> List[int]:
         devices = []

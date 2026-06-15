@@ -816,6 +816,117 @@ class TestHardwareAccelerationManager:
         assert thread.hw_acceleration is False
 
 
+# ──────────────────────────────────────────────
+#  Интеграция мультиплексора (отображение parked-кадров)
+# ──────────────────────────────────────────────
+
+
+class TestMultiplexFrameMerge:
+    """process_frames() должен включать кадры из MultiplexScheduler.
+
+    Мультиплексируемые камеры не лежат в self.cameras (ими владеет
+    планировщик), поэтому без слияния их окна мерцают: создаются и тут же
+    закрываются на чередующихся итерациях главного цикла.
+    """
+
+    def test_includes_parked_frames_when_queue_empty(self, usb_manager, fake_frame):
+        """Parked-камеры (нет в self.cameras, очередь пуста) всё равно видны."""
+        scheduler = MagicMock()
+        scheduler.get_all_frames.return_value = {
+            2: fake_frame,
+            4: fake_frame,
+            6: fake_frame,
+        }
+        usb_manager._multiplex_scheduler = scheduler
+
+        result = usb_manager.process_frames()
+        assert set(result.keys()) == {2, 4, 6}
+
+    def test_skips_none_parked_frames(self, usb_manager, fake_frame):
+        """Камеры, ещё не давшие кадр (None), не попадают в результат."""
+        scheduler = MagicMock()
+        scheduler.get_all_frames.return_value = {2: fake_frame, 4: None}
+        usb_manager._multiplex_scheduler = scheduler
+
+        result = usb_manager.process_frames()
+        assert 2 in result
+        assert 4 not in result
+
+    def test_fresh_queue_frame_takes_precedence(self, usb_manager):
+        """Свежий кадр из очереди не перезаписывается parked-копией."""
+        fresh = np.full((480, 640, 3), 7, dtype=np.uint8)
+        parked = np.full((480, 640, 3), 99, dtype=np.uint8)
+        scheduler = MagicMock()
+        scheduler.get_all_frames.return_value = {2: parked}
+        usb_manager._multiplex_scheduler = scheduler
+        usb_manager.frame_queue.put((2, fresh))
+
+        result = usb_manager.process_frames()
+        assert np.all(result[2] == 7)
+
+    def test_no_scheduler_is_noop(self, usb_manager):
+        """Без мультиплексора поведение process_frames не меняется."""
+        assert usb_manager._multiplex_scheduler is None
+        assert usb_manager.process_frames() == {}
+
+
+# ──────────────────────────────────────────────
+#  Потокобезопасность удаления камеры (HighGUI)
+# ──────────────────────────────────────────────
+
+
+class TestRemoveCameraThreadSafety:
+    """_remove_camera не должен трогать HighGUI из фонового потока.
+
+    Вызов cv2.destroyWindow вне главного потока приводит к
+    "QObject::killTimer/startTimer: Timers cannot be ... from another
+    thread" и краху (SIGSEGV).
+    """
+
+    def _camera_entry(self, source="USB Camera 0"):
+        return {
+            "thread": _make_mock_thread(),
+            "stop_event": threading.Event(),
+            "last_frame": None,
+            "last_update": 0,
+            "source": source,
+        }
+
+    def test_destroys_window_on_main_thread(self):
+        """На главном потоке окно удаляется (поведение сохранено)."""
+        mgr = USBCameraManager(show_gui=True)
+        mgr.cameras[0] = self._camera_entry()
+        title = mgr._get_window_title(0)
+        mgr.active_windows.add(title)
+
+        with patch("cv2.destroyWindow") as destroy, patch("cv2.waitKey"):
+            mgr._remove_camera(0)
+
+        destroy.assert_called_once_with(title)
+        assert title not in mgr.active_windows
+        assert 0 not in mgr.cameras
+
+    def test_skips_gui_off_main_thread(self):
+        """В фоновом потоке HighGUI не вызывается, но камера всё равно удаляется."""
+        mgr = USBCameraManager(show_gui=True)
+        mgr.cameras[0] = self._camera_entry()
+        mgr.active_windows.add(mgr._get_window_title(0))
+
+        destroy_calls = {}
+
+        def worker():
+            with patch("cv2.destroyWindow") as destroy, patch("cv2.waitKey"):
+                mgr._remove_camera(0)
+                destroy_calls["count"] = destroy.call_count
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        assert destroy_calls["count"] == 0
+        assert 0 not in mgr.cameras
+
+
 # ──────────────────────────────
 #  Выбор Qt-платформы для GUI (Wayland/X11)
 # ──────────────────────────────
