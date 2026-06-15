@@ -103,6 +103,7 @@ class ManagerBridge(QObject):
     sequential_camera_changed = pyqtSignal(int)
     log_message = pyqtSignal(str)
     restart_complete = pyqtSignal()
+    parked_status = pyqtSignal(dict)  # {camera_id: staleness_seconds}
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -315,6 +316,13 @@ class ManagerBridge(QObject):
         self._switch_interval = pending.get("switch_interval", 3.0)
 
         # --- USB manager ---
+        # Multiplex settings
+        multiplex_mode = pending.get("multiplex_mode", "auto")
+        multiplex_slots = pending.get("multiplex_slots", 2)
+        multiplex_dwell = pending.get("multiplex_dwell", 1.5)
+        multiplex_settle = pending.get("multiplex_settle", 0.2)
+        multiplex_backend = pending.get("multiplex_backend", "v4l2")
+
         self._usb_manager = USBCameraManager(
             show_gui=False,
             max_cameras=10,
@@ -323,6 +331,11 @@ class ManagerBridge(QObject):
             fps=fps,
             hw_acceleration=hw_acceleration,
             frame_callback=None,
+            multiplex_mode=multiplex_mode,
+            multiplex_slots=multiplex_slots,
+            multiplex_dwell=multiplex_dwell,
+            multiplex_settle=multiplex_settle,
+            multiplex_backend=multiplex_backend,
         )
         # Replace the default queue with our shared one
         self._usb_manager.frame_queue = self._frame_queue
@@ -412,6 +425,28 @@ class ManagerBridge(QObject):
                     if dev_id not in frames and dev_id in self._cached_frames:
                         frames[dev_id] = self._cached_frames[dev_id]
 
+        # 2b) Merge multiplexed camera frames (from scheduler, not from threads)
+        mpx_scheduler = (
+            getattr(self._usb_manager, "_multiplex_scheduler", None)
+            if self._usb_manager is not None
+            else None
+        )
+        if mpx_scheduler is not None:
+            now = time.time()
+            active_mpx = mpx_scheduler.get_active_cameras()
+            last_fresh = mpx_scheduler.get_last_fresh()
+            parked_info: Dict[int, float] = {}
+            for cam_id, frame in mpx_scheduler.get_all_frames().items():
+                if frame is not None:
+                    # For parked cameras, use the last known frame
+                    self._cached_frames[cam_id] = frame
+                    frames[cam_id] = frame
+                    if cam_id not in active_mpx:
+                        lf = last_fresh.get(cam_id)
+                        parked_info[cam_id] = (now - lf) if lf else 0.0
+            if parked_info:
+                self.parked_status.emit(parked_info)
+
         # 3) Sequential mode: only emit frames for the active camera
         if self._sequential_mode and frames:
             active_ids = sorted(frames.keys())
@@ -438,12 +473,14 @@ class ManagerBridge(QObject):
         for cam_id, frame in emit_frames.items():
             self.frame_ready.emit(cam_id, frame)
 
-        # 5) Detect camera set changes
+        # 5) Detect camera set changes (include multiplexed cameras)
         current_ids: Set[int] = set()
         for mgr in (self._usb_manager, self._ip_manager):
             if mgr is not None:
                 with mgr.lock:
                     current_ids.update(mgr.cameras.keys())
+        if mpx_scheduler is not None:
+            current_ids.update(mpx_scheduler.get_multiplex_cameras())
         if current_ids != self._prev_camera_ids:
             self._prev_camera_ids = current_ids
             self.cameras_changed.emit(current_ids)

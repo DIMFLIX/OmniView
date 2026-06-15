@@ -60,6 +60,11 @@ class SettingsPanel(QWidget):
 
     def current_settings(self) -> dict:
         """Return the current values of all settings as a dict."""
+        # Determine multiplex mode from the combo box
+        multiplex_mode = self._combo_multiplex.currentData()
+        if not self._check_multiplex.isChecked():
+            multiplex_mode = "off"
+
         return {
             "frame_width": self._spin_width.value(),
             "frame_height": self._spin_height.value(),
@@ -68,6 +73,11 @@ class SettingsPanel(QWidget):
             "sequential_mode": self._check_sequential.isChecked(),
             "switch_interval": self._spin_interval.value(),
             "rtsp_urls": self._parse_rtsp_urls(),
+            "multiplex_mode": multiplex_mode,
+            "multiplex_slots": self._spin_multiplex_slots.value(),
+            "multiplex_dwell": self._spin_multiplex_dwell.value(),
+            "multiplex_settle": self._spin_multiplex_settle.value(),
+            "multiplex_backend": self._combo_multiplex_backend.currentData(),
         }
 
     def _parse_rtsp_urls(self) -> list[str]:
@@ -160,6 +170,85 @@ class SettingsPanel(QWidget):
 
         layout.addWidget(grp_orch)
 
+        # --- Multiplex (USB Hub Rotation) ---
+        grp_mpx = IconGroupBox("Мультиплекс USB", str(_ICONS / "refresh.svg"))
+        mpx_layout = grp_mpx.body_layout()
+
+        self._check_multiplex = QCheckBox("Auto Multiplex")
+        self._check_multiplex.setChecked(True)
+        self._check_multiplex.setToolTip(
+            "Автоматическое вращение камер на USB-хабе\n"
+            "(K слотов для N камер, N > K)"
+        )
+        mpx_layout.addWidget(self._check_multiplex)
+
+        # Mode combo: auto / force
+        row_mode = QHBoxLayout()
+        lbl_mode = QLabel("Режим")
+        lbl_mode.setFixedWidth(54)
+        lbl_mode.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 12px;")
+        self._combo_multiplex = QComboBox()
+        self._combo_multiplex.addItem("Авто (по топологии)", "auto")
+        self._combo_multiplex.addItem("Принудительно", "force")
+        row_mode.addWidget(lbl_mode)
+        row_mode.addWidget(self._combo_multiplex)
+        mpx_layout.addLayout(row_mode)
+
+        # Slots
+        row_slots = QHBoxLayout()
+        lbl_slots = QLabel("Слоты")
+        lbl_slots.setFixedWidth(54)
+        lbl_slots.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 12px;")
+        self._spin_multiplex_slots = self._make_spin(1, 8, 2, 1, "")
+        self._spin_multiplex_slots.setToolTip("Макс. одновременных стримов на хаб (K)")
+        row_slots.addWidget(lbl_slots)
+        row_slots.addWidget(self._spin_multiplex_slots)
+        mpx_layout.addLayout(row_slots)
+
+        # Dwell
+        row_dwell = QHBoxLayout()
+        lbl_dwell = QLabel("Dwell")
+        lbl_dwell.setFixedWidth(54)
+        lbl_dwell.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 12px;")
+        self._spin_multiplex_dwell = QDoubleSpinBox()
+        self._spin_multiplex_dwell.setRange(0.3, 30.0)
+        self._spin_multiplex_dwell.setSingleStep(0.3)
+        self._spin_multiplex_dwell.setValue(1.5)
+        self._spin_multiplex_dwell.setSuffix(" sec")
+        self._spin_multiplex_dwell.setToolTip("Время жизни камеры в окне перед ротацией")
+        row_dwell.addWidget(lbl_dwell)
+        row_dwell.addWidget(self._spin_multiplex_dwell)
+        mpx_layout.addLayout(row_dwell)
+
+        # Settle
+        row_settle = QHBoxLayout()
+        lbl_settle = QLabel("Settle")
+        lbl_settle.setFixedWidth(54)
+        lbl_settle.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 12px;")
+        self._spin_multiplex_settle = QDoubleSpinBox()
+        self._spin_multiplex_settle.setRange(0.0, 2.0)
+        self._spin_multiplex_settle.setSingleStep(0.05)
+        self._spin_multiplex_settle.setValue(0.2)
+        self._spin_multiplex_settle.setSuffix(" sec")
+        self._spin_multiplex_settle.setToolTip("Пауза после освобождения слота")
+        row_settle.addWidget(lbl_settle)
+        row_settle.addWidget(self._spin_multiplex_settle)
+        mpx_layout.addLayout(row_settle)
+
+        # Backend
+        row_backend = QHBoxLayout()
+        lbl_backend = QLabel("Бэкенд")
+        lbl_backend.setFixedWidth(54)
+        lbl_backend.setStyleSheet(f"color: {C.TEXT_DIM}; font-size: 12px;")
+        self._combo_multiplex_backend = QComboBox()
+        self._combo_multiplex_backend.addItem("V4L2 (быстро)", "v4l2")
+        self._combo_multiplex_backend.addItem("OpenCV", "opencv")
+        row_backend.addWidget(lbl_backend)
+        row_backend.addWidget(self._combo_multiplex_backend)
+        mpx_layout.addLayout(row_backend)
+
+        layout.addWidget(grp_mpx)
+
         # --- Demo Filters ---
         grp_filter = IconGroupBox("Демо-фильтры", str(_ICONS / "palette.svg"))
         filter_layout = grp_filter.body_layout()
@@ -204,6 +293,13 @@ class SettingsPanel(QWidget):
         self._check_sequential.stateChanged.connect(self._on_sequential_changed)
         self._spin_interval.valueChanged.connect(self._schedule_emit)
         self._rtsp_edit.textChanged.connect(self._schedule_emit)
+        # Multiplex controls
+        self._check_multiplex.stateChanged.connect(self._on_multiplex_changed)
+        self._combo_multiplex.currentIndexChanged.connect(self._schedule_emit)
+        self._spin_multiplex_slots.valueChanged.connect(self._schedule_emit)
+        self._spin_multiplex_dwell.valueChanged.connect(self._schedule_emit)
+        self._spin_multiplex_settle.valueChanged.connect(self._schedule_emit)
+        self._combo_multiplex_backend.currentIndexChanged.connect(self._schedule_emit)
         # Filter change does NOT restart the manager — it is applied per-frame
 
     def _schedule_emit(self) -> None:
@@ -213,6 +309,16 @@ class SettingsPanel(QWidget):
     def _on_sequential_changed(self, state: int) -> None:
         """Enable/disable the switch interval spin-box and schedule emit."""
         self._spin_interval.setEnabled(bool(state))
+        self._schedule_emit()
+
+    def _on_multiplex_changed(self, state: int) -> None:
+        """Enable/disable multiplex sub-controls and schedule emit."""
+        enabled = bool(state)
+        self._combo_multiplex.setEnabled(enabled)
+        self._spin_multiplex_slots.setEnabled(enabled)
+        self._spin_multiplex_dwell.setEnabled(enabled)
+        self._spin_multiplex_settle.setEnabled(enabled)
+        self._combo_multiplex_backend.setEnabled(enabled)
         self._schedule_emit()
 
     def _emit_settings(self) -> None:

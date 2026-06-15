@@ -42,6 +42,8 @@ class CameraWidget(QLabel):
         self._fps_time: float = time.time()
         self._current_filter_name: str = "Original"
         self._is_fullscreen: bool = False
+        self._parked: bool = False
+        self._parked_staleness: float = 0.0
 
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(320, 240)
@@ -68,6 +70,16 @@ class CameraWidget(QLabel):
         self.setStyleSheet(
             CAMERA_WIDGET_FULLSCREEN_STYLE if enabled else CAMERA_WIDGET_STYLE
         )
+
+    def set_parked(self, parked: bool, staleness: float = 0.0) -> None:
+        """Mark this camera as parked (not currently streaming).
+
+        Args:
+            parked: True if camera is in a parked/rotated-out state
+            staleness: seconds since last fresh frame
+        """
+        self._parked = parked
+        self._parked_staleness = staleness
 
     def update_frame(self, frame: np.ndarray) -> None:
         """Apply the current filter, draw overlays, convert to QPixmap and display.
@@ -110,7 +122,7 @@ class CameraWidget(QLabel):
     # -- internals -----------------------------------------------------------
 
     def _draw_overlay(self, frame: np.ndarray) -> None:
-        """Draw camera ID and FPS text onto the frame in-place."""
+        """Draw camera ID, FPS, and parking status onto the frame in-place."""
         # Semi-transparent background for readability
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (200, 70), (0, 0, 0), -1)
@@ -137,6 +149,25 @@ class CameraWidget(QLabel):
             2,
             cv2.LINE_AA,
         )
+
+        # Parked badge — shown when camera is rotated out of the live window
+        if self._parked:
+            badge_text = f"PARKED {self._parked_staleness:.1f}s"
+            # Gray badge in the top-right corner
+            h, w = frame.shape[:2]
+            overlay2 = frame.copy()
+            cv2.rectangle(overlay2, (w - 170, 0), (w, 30), (40, 40, 40), -1)
+            cv2.addWeighted(overlay2, 0.6, frame, 0.4, 0, frame)
+            cv2.putText(
+                frame,
+                badge_text,
+                (w - 165, 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (160, 160, 160),  # gray
+                2,
+                cv2.LINE_AA,
+            )
 
     # -- mouse events --------------------------------------------------------
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802

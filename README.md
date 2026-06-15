@@ -39,6 +39,7 @@ A system for simultaneous viewing and processing of streams from multiple camera
 - Customizable camera parameters (resolution, FPS)
 - Multithreaded frame processing
 - Hardware-accelerated decoding (D3D11 on Windows, VAAPI on Linux) with automatic software fallback
+- **USB hub multiplexing** — auto-detect cameras sharing a USB 2.0 hub and time-multiplex them with a rolling-window scheduler (STREAMON/STREAMOFF for sub-second rotation)
 - Flexible callback system for video processing
 - Ready-to-use GUI for viewing streams
 - Configuration via constructor parameters
@@ -114,8 +115,31 @@ if __name__ == "__main__":
 | frame_callback  | function | None          | Callback for frame processing                                                           |
 | exit_keys       | tuple    | (ord('q'),27) | exit keys                                                                               |
 | hw_acceleration | bool     | True          | Use GPU video decoding when available (D3D11/VAAPI); falls back to software             |
-| sequential_mode | bool     | False         | Method to show the cameras one by one                                                   |
-| switch_interval | float    | 5.0           | The time after which the cameras will change. Only works if sequential_mode is selected |
+|| sequential_mode | bool     | False         | Method to show the cameras one by one                                                   |
+|| switch_interval | float    | 5.0           | The time after which the cameras will change. Only works if sequential_mode is selected |
+|| multiplex_mode   | str      | "auto"        | USB bus contention: "auto" (detect topology), "off", "force"                          |
+|| multiplex_slots  | int      | 2             | Max simultaneous streams per USB hub (K)                                                |
+|| multiplex_dwell  | float    | 1.5           | Seconds a camera stays live before rotating out                                          |
+|| multiplex_settle | float    | 0.2           | Pause after releasing a camera before opening next                                       |
+|| multiplex_backend| str      | "v4l2"        | Rotation backend: "v4l2" (STREAMON/OFF) or "opencv" (release/open)                      |
+|| multiplex_fourcc | str      | "MJPG"        | Pixel format for V4L2 backend                                                            |
+
+### USB Hub Multiplexing
+When multiple USB cameras share a single USB 2.0 hub, the bus can only sustain a limited number of simultaneous isochronous streams (empirically K=2). Opening more cameras causes ENOSPC ("No space left on device").
+
+OmniView automatically detects which cameras are behind the same hub by reading `/sys/class/video4linux` symlinks, and applies a rolling-window rotation: K cameras stream live while the rest show their last captured frame ("parked"). The active window rotates every `dwell` seconds.
+
+```python
+manager = USBCameraManager(
+    show_gui=True,
+    multiplex_mode="auto",   # detect from USB topology
+    multiplex_slots=2,        # K=2 simultaneous streams per hub
+    multiplex_dwell=1.5,      # rotate every 1.5 seconds
+    multiplex_backend="v4l2", # fast STREAMON/STREAMOFF
+)
+```
+
+Cameras connected directly to root hub ports (no intermediate hub) are not multiplexed — they have no bus contention.
 
 ### Class IPCameraManager
 **Builder parameters (Same as USBCameraManager, but with an addition):**

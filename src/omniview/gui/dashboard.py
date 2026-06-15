@@ -109,6 +109,7 @@ class Dashboard(QMainWindow):
         )
         self._bridge.log_message.connect(self._settings.append_log)
         self._bridge.restart_complete.connect(self._on_restart_complete)
+        self._bridge.parked_status.connect(self._on_parked_status)
         self._settings.settings_changed.connect(self._apply_settings)
         self._settings._combo_filter.currentTextChanged.connect(
             self._on_filter_changed
@@ -289,6 +290,20 @@ class Dashboard(QMainWindow):
         """Switch the displayed camera tile in sequential mode."""
         self._seq_active_camera_id = camera_id
         self._rebuild_grid()
+
+    # -- slots: multiplex parked status --------------------------------------
+
+    @pyqtSlot(dict)
+    def _on_parked_status(self, parked_info: dict) -> None:
+        """Update parked badges on CameraWidgets for multiplexed cameras."""
+        for cam_id, staleness in parked_info.items():
+            widget = self._camera_widgets.get(cam_id)
+            if widget is not None:
+                widget.set_parked(True, staleness)
+        # Clear parked status for cameras that are no longer parked
+        for cam_id, widget in self._camera_widgets.items():
+            if cam_id not in parked_info:
+                widget.set_parked(False)
 
     # -- slots: double-click fullscreen toggle -------------------------------
 

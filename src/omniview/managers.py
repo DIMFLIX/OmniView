@@ -14,6 +14,7 @@ from typing import Optional
 
 import cv2
 
+from .multiplex import MultiplexScheduler
 from .threads import BaseCameraThread
 from .threads import IPCameraThread
 from .threads import USBCameraThread
@@ -104,6 +105,11 @@ class BaseCameraManager(ABC):
     def stop(self):
         """Stop all camera processing and clean up resources"""
         self.stop_event.set()
+
+        scheduler = getattr(self, "_multiplex_scheduler", None)
+        if scheduler is not None:
+            scheduler.stop()
+            self._multiplex_scheduler = None
 
         for dev_id in list(self.cameras.keys()):
             self._remove_camera(dev_id)
@@ -471,6 +477,15 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         hw_acceleration: Request GPU-accelerated decoding when available
         sequential_mode: Method to show the cameras one by one
         switch_interval: The time after which the cameras will change. Only works if sequential_mode is selected
+        multiplex_mode: How to handle USB bus contention:
+            "auto" - detect from USB topology (default)
+            "off"  - never multiplex
+            "force" - multiplex all cameras as if they share one hub
+        multiplex_slots: Max simultaneous streams per hub (K, default 2)
+        multiplex_dwell: Seconds a camera stays live before rotating out (default 1.5)
+        multiplex_settle: Pause after releasing a camera before opening next (default 0.2)
+        multiplex_backend: Rotation backend - "v4l2" (STREAMON/OFF) or "opencv" (release/open)
+        multiplex_fourcc: Pixel format for V4L2 backend (default "MJPG")
     """
 
     def __init__(
@@ -478,6 +493,12 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         *args,
         sequential_mode: bool = False,
         switch_interval: float = 5.0,
+        multiplex_mode: str = "auto",
+        multiplex_slots: int = 2,
+        multiplex_dwell: float = 1.5,
+        multiplex_settle: float = 0.2,
+        multiplex_backend: str = "v4l2",
+        multiplex_fourcc: str = "MJPG",
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -488,12 +509,58 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         self.cap = None
         self.window_title = "USB Camera Switcher"
 
+        self.multiplex_mode = multiplex_mode
+        self.multiplex_slots = multiplex_slots
+        self.multiplex_dwell = multiplex_dwell
+        self.multiplex_settle = multiplex_settle
+        self.multiplex_backend = multiplex_backend
+        self.multiplex_fourcc = multiplex_fourcc
+
+        # Multiplex scheduler (created in start() after device discovery)
+        self._multiplex_scheduler: Optional[MultiplexScheduler] = None
+
     def start(self):
         """Start camera processing in selected mode"""
         if self.sequential_mode:
             self._sequential_main_loop()
         else:
             super().start()
+
+    def _monitor_cameras(self):
+        """Continuously monitor and update camera connections.
+
+        Overrides BaseCameraManager to add multiplex scheduler initialization
+        and polling in the monitor loop.
+
+        When multiplex is active, the loop runs at 50 ms for responsive
+        rotation. Device scanning is expensive (opens every /dev/videoN),
+        so it's throttled to once per 3 s even in fast-poll mode.
+        """
+        mpx_initialized = False
+        last_scan = 0.0
+        cached_devices: List[int] = []
+
+        while not self.stop_event.is_set():
+            now = time.time()
+
+            # Scan for new/removed cameras every 3 s (expensive operation)
+            if not mpx_initialized or now - last_scan >= 3.0:
+                cached_devices = self._get_available_devices()
+                last_scan = now
+
+                with self.lock:
+                    if not mpx_initialized:
+                        self._init_multiplex(cached_devices)
+                        mpx_initialized = True
+                    self._update_camera_connections(cached_devices)
+
+            # Poll the multiplex scheduler (grab frames + rotate windows)
+            if self._multiplex_scheduler is not None:
+                self._multiplex_scheduler.poll()
+
+            # When multiplex is active, poll at 50 ms for responsive
+            # rotation. Otherwise 3 s is fine (just hot-plug detection).
+            time.sleep(0.05 if self._multiplex_scheduler is not None else 3)
 
     def _get_available_devices(self) -> List[int]:
         devices = []
@@ -508,6 +575,67 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
             else:
                 self.logger.info(f"The camera with index {i} is not available")
         return devices
+
+    def _init_multiplex(self, devices: List[int]) -> List[int]:
+        """Set up the multiplex scheduler and return cameras it manages.
+
+        Cameras returned by this method are handled by the MultiplexScheduler
+        (they share a congested USB hub) and should NOT have USBCameraThread
+        started for them.  All other cameras are unrestricted and go through
+        the normal per-camera thread path.
+        """
+        if self.multiplex_mode == "off":
+            return []
+
+        self._multiplex_scheduler = MultiplexScheduler(
+            frame_queue=self.frame_queue,
+            width=self.frame_width,
+            height=self.frame_height,
+            fps=self.fps,
+            fourcc=self.multiplex_fourcc,
+            hw_acceleration=self.hw_acceleration,
+        )
+        multiplex_cams = self._multiplex_scheduler.configure(
+            devices,
+            mode=self.multiplex_mode,
+            slots=self.multiplex_slots,
+            dwell=self.multiplex_dwell,
+            settle=self.multiplex_settle,
+            backend=self.multiplex_backend,
+        )
+        if multiplex_cams:
+            self._multiplex_scheduler.start()
+        else:
+            self._multiplex_scheduler = None
+        return multiplex_cams
+
+    def _add_camera(self, dev_id: int):
+        """Initialize and start a new camera thread (skip multiplexed cams)."""
+        if dev_id in self.cameras:
+            return
+        # Skip cameras managed by the multiplex scheduler
+        if (self._multiplex_scheduler is not None
+                and dev_id in self._multiplex_scheduler.get_multiplex_cameras()):
+            self.logger.info(f"Camera {dev_id} managed by multiplex scheduler")
+            return
+
+        self.logger.info(f"Adding camera {dev_id}")
+
+        try:
+            stop_event = threading.Event()
+            thread = self._create_camera_thread(dev_id, stop_event)
+
+            self.cameras[dev_id] = {
+                "thread": thread,
+                "stop_event": stop_event,
+                "last_frame": None,
+                "last_update": 0,
+                "source": thread._get_source(),
+            }
+
+            thread.start()
+        except Exception as e:
+            self.logger.error(f"Error adding camera {dev_id}: {str(e)}")
 
     def _create_camera_thread(
         self, camera_id: int, stop_event: threading.Event
