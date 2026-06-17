@@ -14,9 +14,10 @@ mode* pushes frames via ``frame_callback`` instead of the
    detection every 3 s for USB; IP cameras are always available).
 2. Drain ``frame_queue`` directly from a QTimer on the GUI thread
    (≈30 Hz).
-3. Implement *sequential mode* ourselves by showing only the frames
-   from the camera whose turn it is, cycling every
-   ``switch_interval`` seconds.
+3. **Sequential mode** uses ``SequentialController`` which opens at
+   most two cameras simultaneously (active + buffer) and rotates
+   every ``switch_interval`` seconds.  The controller runs on a
+   background thread and puts frames into the shared queue.
 
 **Dual-manager**: both ``USBCameraManager`` and ``IPCameraManager``
 share a single ``frame_queue``.  IP camera IDs are offset by
@@ -36,6 +37,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
 from omniview.managers import IPCameraManager
 from omniview.managers import USBCameraManager
+from omniview.sequential import SequentialController
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +131,9 @@ class ManagerBridge(QObject):
         # Sequential mode state
         self._sequential_mode: bool = False
         self._switch_interval: float = 3.0
-        self._seq_index: int = 0
-        self._seq_switch_time: float = time.time()
+        self._seq_controller: Optional[SequentialController] = None
+        self._seq_thread: Optional[threading.Thread] = None
+        self._seq_prev_active: Optional[int] = None
 
         # Whether _start_poll_signal has been connected
         self._poll_signal_connected: bool = False
@@ -152,21 +155,27 @@ class ManagerBridge(QObject):
         """Create managers, start their monitor threads, start polling."""
         self._create_managers()
 
-        # Start USB monitor thread (hot-plug detection)
-        if self._usb_manager is not None:
-            self._usb_manager.stop_event.clear()
-            self._usb_monitor_thread = threading.Thread(
-                target=self._usb_manager._monitor_cameras, daemon=True
-            )
-            self._usb_monitor_thread.start()
+        if self._sequential_mode:
+            # Sequential mode: use SequentialController instead of
+            # per-camera threads.  The controller opens at most 2 cameras
+            # (active + buffer) and rotates on switch_interval.
+            self._start_sequential()
+        else:
+            # Normal mode: start monitor threads for hot-plug detection
+            if self._usb_manager is not None:
+                self._usb_manager.stop_event.clear()
+                self._usb_monitor_thread = threading.Thread(
+                    target=self._usb_manager._monitor_cameras, daemon=True
+                )
+                self._usb_monitor_thread.start()
 
-        # Start IP monitor thread (keeps IP camera threads alive)
-        if self._ip_manager is not None:
-            self._ip_manager.stop_event.clear()
-            self._ip_monitor_thread = threading.Thread(
-                target=self._ip_manager._monitor_cameras, daemon=True
-            )
-            self._ip_monitor_thread.start()
+            # Start IP monitor thread (keeps IP camera threads alive)
+            if self._ip_manager is not None:
+                self._ip_manager.stop_event.clear()
+                self._ip_monitor_thread = threading.Thread(
+                    target=self._ip_manager._monitor_cameras, daemon=True
+                )
+                self._ip_monitor_thread.start()
 
         # Start the poll timer on the GUI thread (even if start() is
         # called from a background restart thread, the signal ensures the
@@ -191,6 +200,15 @@ class ManagerBridge(QObject):
         if self._poll_timer is not None:
             self._poll_timer.stop()
             self._poll_timer = None
+
+        # Stop the sequential controller if running.
+        if self._seq_controller is not None:
+            self._seq_controller.stop()
+        if self._seq_thread is not None:
+            self._seq_thread.join(timeout=3.0)
+            self._seq_thread = None
+        self._seq_controller = None
+        self._seq_prev_active = None
 
         # Collect camera threads BEFORE mgr.stop() deletes them from
         # the cameras dict.  We need the Thread refs to join them later.
@@ -314,6 +332,7 @@ class ManagerBridge(QObject):
         # Capture sequential/interval for ourselves
         self._sequential_mode = pending.get("sequential_mode", False)
         self._switch_interval = pending.get("switch_interval", 3.0)
+        self._multiplex_settle = pending.get("multiplex_settle", 0.2)
 
         # --- USB manager ---
         # Multiplex settings
@@ -324,8 +343,8 @@ class ManagerBridge(QObject):
         multiplex_backend = pending.get("multiplex_backend", "v4l2")
 
         # Sequential mode and multiplex are mutually exclusive.  Sequential
-        # opens one camera at a time, so there is no USB contention and the
-        # rotation scheduler is unnecessary.
+        # opens at most 2 cameras at a time (active + buffer), so there is
+        # no USB contention and the rotation scheduler is unnecessary.
         if self._sequential_mode:
             multiplex_mode = "off"
 
@@ -345,15 +364,19 @@ class ManagerBridge(QObject):
         )
         # Replace the default queue with our shared one
         self._usb_manager.frame_queue = self._frame_queue
+        # We handle sequential mode ourselves (via SequentialController),
+        # not via the manager's built-in sequential loop.
         self._usb_manager.sequential_mode = False
 
         # --- IP manager (only if URLs provided) ---
-        rtsp_urls: list[str] = pending.get("rtsp_urls", [])
-        if rtsp_urls:
+        # In sequential mode, IP camera URLs are collected for the
+        # SequentialController instead of being started as threads.
+        self._rtsp_urls: list[str] = pending.get("rtsp_urls", [])
+        if self._rtsp_urls and not self._sequential_mode:
             self._ip_manager = IPCameraManager(
-                rtsp_urls=rtsp_urls,
+                rtsp_urls=self._rtsp_urls,
                 show_gui=False,
-                max_cameras=len(rtsp_urls),
+                max_cameras=len(self._rtsp_urls),
                 frame_width=frame_width,
                 frame_height=frame_height,
                 fps=fps,
@@ -364,7 +387,7 @@ class ManagerBridge(QObject):
             self._ip_manager.frame_queue = self._frame_queue
 
             # Monkey-patch _get_available_devices to return offset IDs
-            original_urls = list(rtsp_urls)
+            original_urls = list(self._rtsp_urls)
             self._ip_manager._get_available_devices = (  # type: ignore[assignment]
                 lambda urls=original_urls: [
                     i + IP_ID_OFFSET for i in range(len(urls))
@@ -375,7 +398,6 @@ class ManagerBridge(QObject):
             # to rtsp_urls indices and put offset IDs into the frame queue
             from omniview.threads import IPCameraThread
 
-            original_create = self._ip_manager._create_camera_thread
             ip_mgr = self._ip_manager
 
             def _create_offset_thread(camera_id: int, stop_event: threading.Event):
@@ -407,6 +429,57 @@ class ManagerBridge(QObject):
             handler = QLogHandler()
             mgr.logger.addHandler(handler)
             self._log_handlers.append(handler)
+
+    def _build_sequential_sources(self) -> list:
+        """Build the source list for SequentialController.
+
+        Combines USB camera indices and IP camera URLs (with offset IDs)
+        into a single list that the controller can open.
+        """
+        sources: list = []
+
+        # USB cameras: probe available devices
+        if self._usb_manager is not None:
+            usb_devices = self._usb_manager._get_available_devices()
+            sources.extend(usb_devices)
+
+        # IP cameras: use offset IDs so they don't collide with USB
+        rtsp_urls = getattr(self, "_rtsp_urls", [])
+        for i, url in enumerate(rtsp_urls):
+            sources.append(url)  # str source → controller opens as RTSP
+
+        return sources
+
+    def _start_sequential(self) -> None:
+        """Build and start the SequentialController on a background thread.
+
+        The controller opens at most 2 cameras (active + buffer) and
+        rotates every ``switch_interval`` seconds.  It puts frames into
+        the shared ``frame_queue`` so the poll timer can drain them.
+        """
+        sources = self._build_sequential_sources()
+        if not sources:
+            return
+
+        # Use the common params from the USB manager
+        mgr = self._usb_manager
+        self._seq_controller = SequentialController(
+            sources=sources,
+            switch_interval=self._switch_interval,
+            frame_queue=self._frame_queue,
+            width=mgr.frame_width if mgr else 640,
+            height=mgr.frame_height if mgr else 480,
+            fps=mgr.fps if mgr else 30,
+            hw_acceleration=mgr.hw_acceleration if mgr else True,
+            settle=self._multiplex_settle,
+            show_gui=False,  # GUI is handled by the poll timer
+        )
+        self._seq_prev_active = None
+
+        self._seq_thread = threading.Thread(
+            target=self._seq_controller.start, daemon=True
+        )
+        self._seq_thread.start()
 
     @pyqtSlot()
     def _poll(self) -> None:
@@ -454,22 +527,23 @@ class ManagerBridge(QObject):
                 self.parked_status.emit(parked_info)
 
         # 3) Sequential mode: only emit frames for the active camera
-        if self._sequential_mode and frames:
-            active_ids = sorted(frames.keys())
-            if not active_ids:
-                return
+        #    (determined by the SequentialController running on a
+        #    background thread, not by index manipulation here).
+        if self._sequential_mode:
+            active_src = (
+                self._seq_controller.get_active_source()
+                if self._seq_controller is not None
+                else None
+            )
+            # Emit sequential_camera_changed when the active source
+            # changes (detected by comparing with previous value).
+            if active_src is not None and active_src != self._seq_prev_active:
+                self._seq_prev_active = active_src
+                self.sequential_camera_changed.emit(active_src)
 
-            now = time.time()
-            if now - self._seq_switch_time >= self._switch_interval:
-                self._seq_index = (self._seq_index + 1) % len(active_ids)
-                self._seq_switch_time = now
-                self.sequential_camera_changed.emit(
-                    active_ids[self._seq_index % len(active_ids)]
-                )
-
-            active_id = active_ids[self._seq_index % len(active_ids)]
-            if active_id in frames:
-                emit_frames = {active_id: frames[active_id]}
+            # Only emit frames from the active camera
+            if active_src is not None and active_src in frames:
+                emit_frames = {active_src: frames[active_src]}
             else:
                 emit_frames = {}
         else:
@@ -491,6 +565,10 @@ class ManagerBridge(QObject):
                     all_known.update(mgr.cameras.keys())
         if mpx_scheduler is not None:
             all_known.update(mpx_scheduler.get_multiplex_cameras())
+        # In sequential mode, the controller's sources are the known
+        # cameras (once they produce a frame).
+        if self._sequential_mode and self._seq_controller is not None:
+            all_known.update(self._seq_controller.sources)
         # A camera is "visible" only if we have cached a frame for it at
         # some point — this prevents empty tiles for cameras whose thread
         # is still starting or that died with ENOSPC.
@@ -504,8 +582,6 @@ class ManagerBridge(QObject):
                     self._cached_frames.pop(cid, None)
             self._prev_camera_ids = current_ids
             self.cameras_changed.emit(current_ids)
-            self._seq_index = 0
-            self._seq_switch_time = time.time()
 
         # 6) Drain log handlers
         for handler in self._log_handlers:
