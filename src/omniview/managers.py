@@ -11,6 +11,7 @@ from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Set
 
 import cv2
 
@@ -19,6 +20,8 @@ from .threads import BaseCameraThread
 from .threads import IPCameraThread
 from .threads import USBCameraThread
 from .threads import build_hw_accel_params
+from .usb_topology import present_capture_devices
+from .usb_topology import present_video_devices
 
 
 class BaseCameraManager(ABC):
@@ -80,9 +83,19 @@ class BaseCameraManager(ABC):
         """Configure logging settings"""
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
-        self.logger.addHandler(handler)
+        # logging.getLogger(name) returns a process-wide shared instance, so
+        # adding a handler unconditionally attaches a new one for every
+        # manager created in the same process — duplicating every log line
+        # once per instance (the cause of the repeated log output). Attach
+        # our handler only once and disable propagation so a configured root
+        # logger can't emit a second copy either.
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(
+                logging.Formatter("[%(levelname)s] %(name)s: %(message)s")
+            )
+            self.logger.addHandler(handler)
+        self.logger.propagate = False
 
     @abstractmethod
     def _get_available_devices(self) -> List[int]:
@@ -532,6 +545,26 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         # Multiplex scheduler (created in start() after device discovery)
         self._multiplex_scheduler: Optional[MultiplexScheduler] = None
 
+        # Per-camera thread restart counter (sysfs-based detection never
+        # removes a present device, so dead threads must be restarted;
+        # cap prevents infinite ENOSPC restart loop on a congested hub).
+        self._thread_restarts: Dict[int, int] = {}
+        self._MAX_THREAD_RESTARTS = 2
+
+        # Cameras that exceeded the restart limit — they are physically
+        # present (sysfs sees them) but should NOT be re-added as per-camera
+        # threads.  The multiplex scheduler will claim them on the next
+        # reconfigure pass; if multiplex is off, they stay condemned until
+        # the device node disappears.
+        self._condemned_cameras: Set[int] = set()
+
+        # Cameras already announced as multiplex-managed.  _add_camera runs
+        # on every monitor scan (~3 s) and multiplexed cameras never enter
+        # self.cameras, so logging the "managed by multiplex scheduler"
+        # line unconditionally repeats it forever.  Track announced cameras
+        # to log the message once per camera.
+        self._multiplex_announced: Set[int] = set()
+
     def start(self):
         """Start camera processing in selected mode"""
         if self.sequential_mode:
@@ -546,26 +579,62 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         and polling in the monitor loop.
 
         When multiplex is active, the loop runs at 50 ms for responsive
-        rotation. Device scanning is expensive (opens every /dev/videoN),
-        so it's throttled to once per 3 s even in fast-poll mode.
+        rotation. Device presence is read from sysfs
+        (``/sys/class/video4linux``) so the check never conflicts with the
+        multiplex scheduler's open V4L2 file descriptors.  The old
+        ``_get_available_devices()`` probe (``cv2.VideoCapture``) would fail
+        for devices the scheduler already has open, causing a 3-second
+        oscillation cycle.
+
+        Only *capture-capable* nodes are considered: modern UVC cameras
+        expose extra metadata ``/dev/videoN`` nodes that cannot be opened
+        for capture, and treating them as cameras spawns doomed threads
+        (endless open failures + restart loops) and miscounts cameras in
+        the USB topology grouping.
+
+        Sysfs scanning is cheap (no device opens), so it runs every 3 s
+        alongside the multiplex topology re-evaluation.
         """
         mpx_initialized = False
         last_scan = 0.0
-        cached_devices: List[int] = []
+        cached_present: List[int] = []
 
         while not self.stop_event.is_set():
             now = time.time()
 
-            # Scan for new/removed cameras every 3 s (expensive operation)
+            # Scan for new/removed cameras every 3 s via sysfs.
+            # Unlike the old _get_available_devices() which tried to open
+            # each /dev/videoN (conflicting with the multiplex scheduler),
+            # present_capture_devices() reads /sys/class/video4linux and
+            # keeps only capture-capable nodes — a non-intrusive presence
+            # check that never fights open V4L2 fds and skips metadata nodes.
             if not mpx_initialized or now - last_scan >= 3.0:
-                cached_devices = self._get_available_devices()
+                sysfs_present = present_capture_devices()
+                if sysfs_present is not None:
+                    # Linux: use sysfs (always reliable, never conflicts)
+                    cached_present = sorted(sysfs_present)
+                else:
+                    # Non-Linux fallback: probe with cv2.VideoCapture
+                    cached_present = self._get_available_devices()
                 last_scan = now
 
                 with self.lock:
                     if not mpx_initialized:
-                        self._init_multiplex(cached_devices)
+                        self._init_multiplex(cached_present)
                         mpx_initialized = True
-                    self._update_camera_connections(cached_devices)
+                    else:
+                        # Re-evaluate multiplex topology on each scan so
+                        # hot-plugged cameras on a congested hub are
+                        # picked up by the scheduler instead of spawning
+                        # per-camera threads that hit ENOSPC.
+                        self._reconfigure_multiplex(cached_present)
+                    self._update_camera_connections(cached_present)
+
+                # Drop multiplexed cameras whose device nodes vanished
+                # (e.g. the USB hub was unplugged).  Done on the slow scan
+                # cadence so cameras disappear "after a certain time".
+                # Reuse the sysfs present set we already read above.
+                self._prune_disconnected_multiplex(sysfs_present)
 
             # Poll the multiplex scheduler (grab frames + rotate windows)
             if self._multiplex_scheduler is not None:
@@ -608,13 +677,41 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         backend = BaseCameraThread.DEFAULT_BACKENDS[backend_key][0]
 
         for i in range(self.max_cameras):
-            cap = cv2.VideoCapture(i, backend)
-            if cap.isOpened():
+            if self._probe_camera(i, backend):
                 devices.append(i)
-                cap.release()
             else:
                 self.logger.info(f"The camera with index {i} is not available")
         return devices
+
+    def _probe_camera(self, index: int, backend: int) -> bool:
+        """Return True if a camera index can be opened, retrying once.
+
+        Probing several cameras on the same congested USB 2.0 hub
+        back-to-back can fail transiently: releasing a UVC device does not
+        free its isochronous bandwidth reservation instantly, so opening
+        the next device immediately afterwards may report ENOSPC even
+        though only one camera is ever streamed at a time.  Without a
+        settle pause the affected camera is dropped from the discovered
+        list for the whole session — the cause of one camera never
+        appearing in sequential mode even though cameras are opened one at
+        a time.  Always release the handle (even on failure, to avoid
+        leaking the fd) and retry once after a short settle so every
+        physically present camera is found.
+        """
+        settle = max(self.multiplex_settle, 0.0)
+        for attempt in range(2):
+            cap = cv2.VideoCapture(index, backend)
+            opened = cap.isOpened()
+            cap.release()
+            if opened:
+                # Let the bus release this camera's bandwidth before the
+                # caller probes/streams the next device.
+                if settle:
+                    time.sleep(settle)
+                return True
+            if attempt == 0 and settle:
+                time.sleep(settle)
+        return False
 
     def _init_multiplex(self, devices: List[int]) -> List[int]:
         """Set up the multiplex scheduler and return cameras it manages.
@@ -624,7 +721,10 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
         started for them.  All other cameras are unrestricted and go through
         the normal per-camera thread path.
         """
-        if self.multiplex_mode == "off":
+        # Sequential mode and multiplex are mutually exclusive.  Sequential
+        # opens one camera at a time, so there is no USB bus contention and
+        # the rotation scheduler is unnecessary.
+        if self.multiplex_mode == "off" or self.sequential_mode:
             return []
 
         self._multiplex_scheduler = MultiplexScheduler(
@@ -649,14 +749,173 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
             self._multiplex_scheduler = None
         return multiplex_cams
 
+    def _prune_disconnected_multiplex(
+        self, sysfs_present: Optional[Set[int]] = None
+    ):
+        """Drop multiplexed cameras whose device nodes have disappeared.
+
+        Multiplexed cameras live in the scheduler, not ``self.cameras``, so
+        the normal hot-unplug path (thread death + device scan) never removes
+        them.  Without this a parked camera keeps showing its last frame
+        forever after the USB hub is pulled.  Presence is read from sysfs so
+        the check does not fight the scheduler over the busy device nodes it
+        is streaming; on platforms without sysfs it is skipped.
+
+        Args:
+            sysfs_present: the set already read by the monitor loop, or
+                ``None`` to read it fresh (fallback for callers outside the
+                loop).
+        """
+        scheduler = self._multiplex_scheduler
+        if scheduler is None:
+            return
+        if sysfs_present is None:
+            sysfs_present = present_video_devices()
+        if sysfs_present is None:
+            return
+        removed = scheduler.sync_available(sysfs_present)
+        if removed:
+            self.logger.info(
+                f"Removed disconnected multiplexed cameras {sorted(removed)}"
+            )
+            # Reset announcement so a re-plugged camera is logged again.
+            self._multiplex_announced.difference_update(removed)
+
+    def _reconfigure_multiplex(self, devices: List[int]):
+        """Re-evaluate multiplex topology after hot-plug changes.
+
+        Called on each 3 s scan so that cameras newly connected to a
+        congested hub are handed off from their per-camera threads to the
+        multiplex scheduler (avoiding ENOSPC), and cameras that left a
+        congested hub get their threads back.
+
+        If the scheduler does not yet exist (e.g. no congested hub was
+        present at startup) but topology now shows contention (a USB hub
+        was hot-plugged with 3+ cameras), the scheduler is created from
+        scratch and the congested cameras' threads are stopped.
+        """
+        if self.multiplex_mode == "off" or self.sequential_mode:
+            return
+
+        scheduler = self._multiplex_scheduler
+
+        # No scheduler yet — check if topology now requires multiplexing
+        # (e.g. a USB hub was plugged in after program start).
+        if scheduler is None:
+            from .usb_topology import needs_multiplexing
+            _, _, mpx_cams = needs_multiplexing(
+                devices, mode=self.multiplex_mode,
+                default_slots=self.multiplex_slots,
+            )
+            if not mpx_cams:
+                return  # still no contention
+            # Stop per-camera threads for congested cameras FIRST so their
+            # V4L2 fds are released before the scheduler tries to open them.
+            for dev_id in mpx_cams:
+                if dev_id in self.cameras:
+                    self._remove_camera(dev_id)
+                    self.logger.info(
+                        f"Camera {dev_id} stopped for new multiplex scheduler"
+                    )
+                # The scheduler will own this camera now — un-condemn it.
+                self._condemned_cameras.discard(dev_id)
+            # Now create the scheduler — it can open the freed devices.
+            self._init_multiplex(devices)
+            return
+
+        added, removed = scheduler.reconfigure(devices)
+
+        # Cameras that left the scheduler may become per-camera threads
+        # again — reset their announcement so a future hand-off re-logs.
+        self._multiplex_announced.difference_update(removed)
+
+        # Stop per-camera threads for cameras now managed by the scheduler
+        for dev_id in added:
+            if dev_id in self.cameras:
+                self._remove_camera(dev_id)
+                self.logger.info(
+                    f"Camera {dev_id} handed off to multiplex scheduler"
+                )
+            # The scheduler now owns this camera — un-condemn it so it
+            # won't be skipped if it ever leaves the scheduler later.
+            self._condemned_cameras.discard(dev_id)
+
+        # Cameras removed from multiplex will be picked up by
+        # _update_camera_connections on the next iteration.
+
+    def _update_camera_connections(self, current_devices: List[int]):
+        """Add, remove, or restart cameras based on sysfs presence.
+
+        Overrides BaseCameraManager to handle the sysfs-based detection
+        model.  With sysfs, a camera whose device node exists will always
+        appear in ``current_devices`` even if a V4L2 fd is already held by
+        the multiplex scheduler.  This means the base class's
+        ``_should_remove_camera`` never fires for a present device with a
+        dead thread (device present → in list → not removed).  We must
+        explicitly restart dead threads for devices that are still
+        physically present.
+
+        Restart is limited to ``_MAX_THREAD_RESTARTS`` attempts.  A camera
+        on a congested USB hub will keep dying with ENOSPC; without a cap
+        it would be restarted every 3 s scan forever.  After the cap is
+        hit the camera is removed from ``self.cameras`` and left for the
+        multiplex scheduler to pick up on the next reconfigure pass.
+        """
+        # Add newly connected cameras
+        for dev_id in current_devices:
+            if dev_id not in self.cameras:
+                self._add_camera(dev_id)
+
+        # Remove cameras whose device nodes have disappeared
+        # (sysfs says gone) OR restart cameras whose threads died
+        # but the device is still physically present.
+        for dev_id in list(self.cameras.keys()):
+            if dev_id not in current_devices:
+                # Device gone — remove regardless of thread state
+                if not self.cameras[dev_id]["thread"].is_alive():
+                    self._remove_camera(dev_id)
+                # Also clear condemned status — the device is gone,
+                # there's nothing to hand off to the scheduler anymore.
+                self._condemned_cameras.discard(dev_id)
+            else:
+                # Device present but thread is dead — decide whether to
+                # restart or give up (the multiplex scheduler will claim
+                # it on the next reconfigure pass).
+                if not self.cameras[dev_id]["thread"].is_alive():
+                    restarts = self._thread_restarts.get(dev_id, 0)
+                    if restarts < self._MAX_THREAD_RESTARTS:
+                        self._thread_restarts[dev_id] = restarts + 1
+                        self.logger.info(
+                            f"Camera {dev_id} thread dead, restarting "
+                            f"(attempt {restarts + 1}/{self._MAX_THREAD_RESTARTS})"
+                        )
+                        self._remove_camera(dev_id)
+                        self._add_camera(dev_id)
+                    else:
+                        self.logger.info(
+                            f"Camera {dev_id} thread dead, max restarts "
+                            f"reached — condemning (multiplex will claim it)"
+                        )
+                        self._remove_camera(dev_id)
+                        self._condemned_cameras.add(dev_id)
+
     def _add_camera(self, dev_id: int):
         """Initialize and start a new camera thread (skip multiplexed cams)."""
         if dev_id in self.cameras:
             return
-        # Skip cameras managed by the multiplex scheduler
+        # Skip cameras managed by the multiplex scheduler.  This runs on
+        # every monitor scan (~3 s) and multiplexed cameras never enter
+        # self.cameras, so only log the line the first time per camera to
+        # avoid spamming the log indefinitely.
         if (self._multiplex_scheduler is not None
                 and dev_id in self._multiplex_scheduler.get_multiplex_cameras()):
-            self.logger.info(f"Camera {dev_id} managed by multiplex scheduler")
+            if dev_id not in self._multiplex_announced:
+                self.logger.info(f"Camera {dev_id} managed by multiplex scheduler")
+                self._multiplex_announced.add(dev_id)
+            return
+        # Skip condemned cameras — they exceeded the restart limit and
+        # are waiting for the multiplex scheduler to claim them.
+        if dev_id in self._condemned_cameras:
             return
 
         self.logger.info(f"Adding camera {dev_id}")
@@ -676,6 +935,14 @@ class USBCameraManager(SequentialCameraMixin, BaseCameraManager):
             thread.start()
         except Exception as e:
             self.logger.error(f"Error adding camera {dev_id}: {str(e)}")
+
+    def _remove_camera(self, dev_id: int):
+        """Stop and remove a camera thread, clearing its restart counter."""
+        super()._remove_camera(dev_id)
+        # Clear restart counter — the camera is gone from self.cameras
+        # now (either handed to scheduler, physically removed, or
+        # abandoned after max restarts).
+        self._thread_restarts.pop(dev_id, None)
 
     def _create_camera_thread(
         self, camera_id: int, stop_event: threading.Event

@@ -25,13 +25,82 @@ Public API
 
 from __future__ import annotations
 
+import ctypes
+import fcntl
 import logging
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+# --- V4L2 capability query (VIDIOC_QUERYCAP) -------------------------------
+# Modern UVC cameras expose extra /dev/videoN "metadata" nodes next to their
+# real capture node (e.g. video0 = capture, video1 = metadata).  Those nodes
+# cannot be opened for video capture, so treating them as cameras makes the
+# manager spawn doomed threads (endless "can't open camera by index" / EINVAL
+# failures + restart loops) and miscount cameras when grouping USB topology.
+# VIDIOC_QUERYCAP lets us cheaply tell a capture node from a metadata node
+# without starting a stream.
+_V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+_V4L2_CAP_DEVICE_CAPS = 0x80000000
+
+
+class _v4l2_capability(ctypes.Structure):
+    """struct v4l2_capability from <linux/videodev2.h>."""
+
+    _fields_ = [
+        ("driver", ctypes.c_char * 16),
+        ("card", ctypes.c_char * 32),
+        ("bus_info", ctypes.c_char * 32),
+        ("version", ctypes.c_uint32),
+        ("capabilities", ctypes.c_uint32),
+        ("device_caps", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32 * 3),
+    ]
+
+
+def _vidioc_querycap() -> int:
+    """Compute the VIDIOC_QUERYCAP ioctl request number (_IOR('V', 0, ...))."""
+    size = ctypes.sizeof(_v4l2_capability)
+    op = (2 << 30) | (size << 16) | (ord("V") << 8) | 0  # dir=_IOC_READ
+    # fcntl.ioctl expects a signed C int; fold values >= 0x80000000.
+    return op - 0x100000000 if op >= 0x80000000 else op
+
+
+_VIDIOC_QUERYCAP = _vidioc_querycap()
+
+
+def _supports_video_capture(idx: int) -> Optional[bool]:
+    """Return whether ``/dev/videoN`` supports video capture.
+
+    Returns ``True``/``False`` from the node's V4L2 capabilities, or ``None``
+    when it can't be determined (open/ioctl failure) so callers can decide to
+    keep the device rather than hide a real camera on a transient glitch.
+    """
+    dev = f"/dev/video{idx}"
+    try:
+        fd = os.open(dev, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        cap = _v4l2_capability()
+        fcntl.ioctl(fd, _VIDIOC_QUERYCAP, cap)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    # device_caps describes THIS node; capabilities is the union across all
+    # nodes of the physical device (so a metadata node would wrongly look
+    # capture-capable if we used it).  Prefer device_caps when available.
+    caps = (
+        cap.device_caps
+        if cap.capabilities & _V4L2_CAP_DEVICE_CAPS
+        else cap.capabilities
+    )
+    return bool(caps & _V4L2_CAP_VIDEO_CAPTURE)
+
 
 # Pattern: a USB device-port segment like "3-1", "1-3.4", "3-1.1.4".
 # The first group before the dot is the hub-level port under the root hub.
@@ -56,6 +125,64 @@ def _video_sysfs_paths() -> Dict[int, str]:
         resolved = str(entry.resolve())
         result[idx] = resolved
     return result
+
+
+def present_video_devices() -> Optional[Set[int]]:
+    """Return the set of ``/dev/videoN`` indices currently present in sysfs.
+
+    Reads ``/sys/class/video4linux`` (the same source as the topology probe)
+    to learn which video device nodes physically exist *right now*.  This is
+    a cheap, non-intrusive presence check: unlike opening the device with
+    OpenCV, it does not contend with the multiplex scheduler over the busy
+    device nodes it is actively streaming, so it stays reliable even while
+    cameras are open.
+
+    Returns:
+        The set of present video indices, or ``None`` when sysfs is
+        unavailable (e.g. non-Linux platforms), signalling callers that
+        sysfs-based presence detection cannot be used.
+    """
+    v4l_class = Path("/sys/class/video4linux")
+    if not v4l_class.is_dir():
+        return None
+    present: Set[int] = set()
+    for entry in v4l_class.iterdir():
+        name = entry.name
+        if not name.startswith("video"):
+            continue
+        try:
+            present.add(int(name.removeprefix("video")))
+        except ValueError:
+            continue
+    return present
+
+
+def present_capture_devices() -> Optional[Set[int]]:
+    """Like :func:`present_video_devices`, but only capture-capable nodes.
+
+    Filters the sysfs presence set through :func:`_supports_video_capture`
+    so the metadata-only ``/dev/videoN`` nodes that modern UVC cameras expose
+    are excluded.  Including them makes the manager spawn doomed camera
+    threads (endless open failures + restart loops) and miscount cameras when
+    grouping USB topology.
+
+    Nodes whose capability can't be determined are kept (fail open) so a real
+    camera is never hidden by a transient probe failure.
+
+    Returns:
+        The set of capture-capable video indices, or ``None`` when sysfs is
+        unavailable (e.g. non-Linux platforms), mirroring
+        :func:`present_video_devices`.
+    """
+    present = present_video_devices()
+    if present is None:
+        return None
+    capture: Set[int] = set()
+    for idx in present:
+        supported = _supports_video_capture(idx)
+        if supported is None or supported:
+            capture.add(idx)
+    return capture
 
 
 def _extract_usb_parent(path: str) -> Tuple[str, int]:

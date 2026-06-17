@@ -49,6 +49,7 @@ class SettingsPanel(QWidget):
         self._debounce_timer.setInterval(400)  # ms
         self._debounce_timer.timeout.connect(self._emit_settings)
         self._connect_signals()
+        self._refresh_control_states()
 
     # -- public API ----------------------------------------------------------
 
@@ -60,9 +61,12 @@ class SettingsPanel(QWidget):
 
     def current_settings(self) -> dict:
         """Return the current values of all settings as a dict."""
-        # Determine multiplex mode from the combo box
+        # Determine multiplex mode from the combo box.  Multiplex is off
+        # when its checkbox is unchecked OR when sequential mode is active
+        # (sequential opens one camera at a time → no USB contention →
+        # multiplex unnecessary).
         multiplex_mode = self._combo_multiplex.currentData()
-        if not self._check_multiplex.isChecked():
+        if not self._check_multiplex.isChecked() or self._check_sequential.isChecked():
             multiplex_mode = "off"
 
         return {
@@ -307,19 +311,37 @@ class SettingsPanel(QWidget):
         self._debounce_timer.start()
 
     def _on_sequential_changed(self, state: int) -> None:
-        """Enable/disable the switch interval spin-box and schedule emit."""
-        self._spin_interval.setEnabled(bool(state))
+        """React to the sequential checkbox: refresh controls and emit."""
+        self._refresh_control_states()
         self._schedule_emit()
 
     def _on_multiplex_changed(self, state: int) -> None:
-        """Enable/disable multiplex sub-controls and schedule emit."""
-        enabled = bool(state)
-        self._combo_multiplex.setEnabled(enabled)
-        self._spin_multiplex_slots.setEnabled(enabled)
-        self._spin_multiplex_dwell.setEnabled(enabled)
-        self._spin_multiplex_settle.setEnabled(enabled)
-        self._combo_multiplex_backend.setEnabled(enabled)
+        """React to the multiplex checkbox: refresh controls and emit."""
+        self._refresh_control_states()
         self._schedule_emit()
+
+    def _refresh_control_states(self) -> None:
+        """Sync enabled/disabled state of dependent controls.
+
+        Sequential mode and multiplex are mutually exclusive.  Sequential
+        opens one camera at a time, so USB contention is impossible and the
+        rotation scheduler is unnecessary.  When sequential is active the
+        entire multiplex group is disabled (and vice versa).  The
+        switch-interval spin-box is only relevant in sequential mode.
+        """
+        sequential = self._check_sequential.isChecked()
+        multiplex_on = self._check_multiplex.isChecked()
+
+        self._spin_interval.setEnabled(sequential)
+
+        # Multiplex is unavailable while sequential mode is active.
+        self._check_multiplex.setEnabled(not sequential)
+        mpx_enabled = multiplex_on and not sequential
+        self._combo_multiplex.setEnabled(mpx_enabled)
+        self._spin_multiplex_slots.setEnabled(mpx_enabled)
+        self._spin_multiplex_dwell.setEnabled(mpx_enabled)
+        self._spin_multiplex_settle.setEnabled(mpx_enabled)
+        self._combo_multiplex_backend.setEnabled(mpx_enabled)
 
     def _emit_settings(self) -> None:
         """Emit the ``settings_changed`` signal with current values."""

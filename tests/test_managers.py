@@ -32,6 +32,7 @@ import pytest
 from src.omniview.managers import BaseCameraManager
 from src.omniview.managers import IPCameraManager
 from src.omniview.managers import USBCameraManager
+from src.omniview.multiplex import MultiplexScheduler
 from src.omniview.threads import IPCameraThread
 from src.omniview.threads import USBCameraThread
 
@@ -949,3 +950,66 @@ class TestQtPlatformSelection:
             os.environ.pop("QT_QPA_PLATFORM", None)
             USBCameraManager(show_gui=True)
             assert os.environ.get("QT_QPA_PLATFORM") == "xcb"
+
+
+# ──────────────────────────────────────────────
+#  Мультиплекс: взаимоисключение с sequential-режимом
+# ──────────────────────────────────────────────
+
+
+class TestMultiplexSequentialGuard:
+    """_init_multiplex is skipped when multiplex_mode='off' OR sequential."""
+
+    def test_init_multiplex_skipped_when_mode_off(self):
+        """multiplex_mode='off' → мультиплекс не инициализируется."""
+        mgr = USBCameraManager(sequential_mode=False, multiplex_mode="off")
+        assert mgr._init_multiplex([0, 1, 2]) == []
+        assert mgr._multiplex_scheduler is None
+
+    def test_init_multiplex_skipped_in_sequential_mode(self):
+        """sequential_mode=True → мультиплекс не инициализируется.
+
+        Sequential opens one camera at a time, so there is no USB bus
+        contention and the rotation scheduler is unnecessary.
+        """
+        mgr = USBCameraManager(sequential_mode=True, multiplex_mode="force")
+        result = mgr._init_multiplex([0, 1, 2])
+        assert result == []
+        assert mgr._multiplex_scheduler is None
+
+
+# ──────────────────────────────────────────────
+#  Мультиплекс: удаление отключённых камер (вынули хаб)
+# ──────────────────────────────────────────────
+
+
+class TestPruneDisconnectedMultiplex:
+    """Тесты _prune_disconnected_multiplex."""
+
+    def test_noop_without_scheduler(self, usb_manager):
+        """Без планировщика метод ничего не делает и не падает."""
+        usb_manager._multiplex_scheduler = None
+        usb_manager._prune_disconnected_multiplex()
+
+    def test_prunes_missing_cameras(self, usb_manager):
+        """sync_available вызывается с присутствующими камерами из sysfs."""
+        scheduler = MagicMock()
+        scheduler.sync_available.return_value = {2}
+        usb_manager._multiplex_scheduler = scheduler
+
+        with patch(
+            "src.omniview.managers.present_video_devices", return_value={4, 6}
+        ):
+            usb_manager._prune_disconnected_multiplex()
+
+        scheduler.sync_available.assert_called_once_with({4, 6})
+
+    def test_skips_when_sysfs_unavailable(self, usb_manager):
+        """Если sysfs недоступен (None) — sync_available не вызывается."""
+        scheduler = MagicMock()
+        usb_manager._multiplex_scheduler = scheduler
+
+        with patch("src.omniview.managers.present_video_devices", return_value=None):
+            usb_manager._prune_disconnected_multiplex()
+
+        scheduler.sync_available.assert_not_called()

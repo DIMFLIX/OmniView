@@ -323,6 +323,12 @@ class ManagerBridge(QObject):
         multiplex_settle = pending.get("multiplex_settle", 0.2)
         multiplex_backend = pending.get("multiplex_backend", "v4l2")
 
+        # Sequential mode and multiplex are mutually exclusive.  Sequential
+        # opens one camera at a time, so there is no USB contention and the
+        # rotation scheduler is unnecessary.
+        if self._sequential_mode:
+            multiplex_mode = "off"
+
         self._usb_manager = USBCameraManager(
             show_gui=False,
             max_cameras=10,
@@ -473,15 +479,29 @@ class ManagerBridge(QObject):
         for cam_id, frame in emit_frames.items():
             self.frame_ready.emit(cam_id, frame)
 
-        # 5) Detect camera set changes (include multiplexed cameras)
-        current_ids: Set[int] = set()
+        # 5) Detect camera set changes (include multiplexed cameras).
+        #    Only expose cameras that have produced at least one frame —
+        #    cameras that are physically present (sysfs) but whose threads
+        #    are still starting up or are condemned after ENOSPC retries
+        #    should not appear as empty tiles.
+        all_known: Set[int] = set()
         for mgr in (self._usb_manager, self._ip_manager):
             if mgr is not None:
                 with mgr.lock:
-                    current_ids.update(mgr.cameras.keys())
+                    all_known.update(mgr.cameras.keys())
         if mpx_scheduler is not None:
-            current_ids.update(mpx_scheduler.get_multiplex_cameras())
+            all_known.update(mpx_scheduler.get_multiplex_cameras())
+        # A camera is "visible" only if we have cached a frame for it at
+        # some point — this prevents empty tiles for cameras whose thread
+        # is still starting or that died with ENOSPC.
+        current_ids = all_known & set(self._cached_frames.keys())
         if current_ids != self._prev_camera_ids:
+            # Forget cached frames for cameras that disappeared (e.g. a
+            # multiplexed camera whose USB hub was unplugged) so they don't
+            # linger in the merge step on a later poll.
+            for cid in list(self._cached_frames.keys()):
+                if cid not in current_ids:
+                    self._cached_frames.pop(cid, None)
             self._prev_camera_ids = current_ids
             self.cameras_changed.emit(current_ids)
             self._seq_index = 0

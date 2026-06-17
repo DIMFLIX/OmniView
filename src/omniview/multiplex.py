@@ -166,15 +166,33 @@ class MultiplexGroup:
                 fd_map[dev.fd] = idx
 
         if fd_map:
-            ready, _, _ = select.select(list(fd_map), [], [], 0.2)
+            try:
+                ready, _, _ = select.select(list(fd_map), [], [], 0.2)
+            except (OSError, ValueError):
+                # Bad file descriptor — one or more cameras were unplugged.
+                # Fall through; individual grab() calls will detect the dead
+                # devices and trigger removal below.
+                ready = []
+            dead: List[int] = []
             for fd in ready:
-                idx = fd_map[fd]
-                dev = self._active[idx]
-                fr = dev.grab()
+                idx = fd_map.get(fd)
+                if idx is None:
+                    continue
+                dev = self._active.get(idx)
+                if dev is None:
+                    continue
+                try:
+                    fr = dev.grab()
+                except OSError:
+                    fr = None
+                    dead.append(idx)
                 if fr is not None:
                     self._frames[idx] = fr
                     self._last_fresh[idx] = now
                     self.frame_queue.put((idx, fr))
+            for idx in dead:
+                logger.warning("cam%d: grab failed (disconnected?)", idx)
+                self.remove_camera(idx)
 
     def _rotate_v4l2(self) -> None:
         """STREAMOFF the oldest active camera, STREAMON the next."""
@@ -186,7 +204,10 @@ class MultiplexGroup:
         victim, vdev = next(iter(self._active.items()))
         self._active.pop(victim)
         if isinstance(vdev, V4L2Camera):
-            vdev.stop()
+            try:
+                vdev.stop()
+            except OSError:
+                logger.debug("cam%d: STREAMOFF failed (already gone)", victim)
         logger.debug("cam%d: STREAMOFF (rotated out)", victim)
 
         if self.settle > 0:
@@ -195,15 +216,16 @@ class MultiplexGroup:
         # Find next candidate
         nxt = self._next_candidate()
         if nxt is not None:
-            dev = self._devices[nxt]
-            try:
-                dev.start()
-                dev.read(timeout=1.0)
-                self._active[nxt] = dev
-                self._last_fresh[nxt] = time.time()
-                logger.debug("cam%d: STREAMON (rotated in)", nxt)
-            except OSError as e:
-                logger.warning("cam%d: STREAMON failed after rotation: %s", nxt, e)
+            dev = self._devices.get(nxt)
+            if dev is not None:
+                try:
+                    dev.start()
+                    dev.read(timeout=1.0)
+                    self._active[nxt] = dev
+                    self._last_fresh[nxt] = time.time()
+                    logger.debug("cam%d: STREAMON (rotated in)", nxt)
+                except OSError as e:
+                    logger.warning("cam%d: STREAMON failed after rotation: %s", nxt, e)
 
         self._last_rot = time.time()
 
@@ -249,14 +271,23 @@ class MultiplexGroup:
     def _poll_opencv(self) -> None:
         """Read frames from active OpenCV cameras."""
         now = time.time()
+        dead: List[int] = []
         for idx, cap in list(self._active.items()):
             if cap is None or not cap.isOpened():
+                dead.append(idx)
                 continue
-            ok, fr = cap.read()
+            try:
+                ok, fr = cap.read()
+            except Exception:
+                ok = False
+                dead.append(idx)
             if ok and fr is not None:
                 self._frames[idx] = fr
                 self._last_fresh[idx] = now
                 self.frame_queue.put((idx, fr))
+        for idx in dead:
+            logger.warning("cam%d: read failed (disconnected?)", idx)
+            self.remove_camera(idx)
 
     def _rotate_opencv(self) -> None:
         """Release the oldest camera, open the next."""
@@ -268,7 +299,10 @@ class MultiplexGroup:
         victim, vcap = next(iter(self._active.items()))
         self._active.pop(victim)
         if isinstance(vcap, cv2.VideoCapture):
-            vcap.release()
+            try:
+                vcap.release()
+            except Exception:
+                logger.debug("cam%d: release failed on rotation (already gone)", victim)
         # Remove from devices so it can be re-opened fresh
         self._devices.pop(victim, None)
         logger.debug("cam%d: released (rotated out, opencv)", victim)
@@ -305,12 +339,18 @@ class MultiplexGroup:
         if not self._started:
             return
 
-        if self.backend == "v4l2" and sys.platform == "linux":
-            self._poll_v4l2()
-            self._rotate_v4l2()
-        else:
-            self._poll_opencv()
-            self._rotate_opencv()
+        try:
+            if self.backend == "v4l2" and sys.platform == "linux":
+                self._poll_v4l2()
+                self._rotate_v4l2()
+            else:
+                self._poll_opencv()
+                self._rotate_opencv()
+        except Exception:
+            # Catch-all: a hot-unplug can cause unexpected errors (EBADF,
+            # ENODEV, etc.) at any point.  Swallow so the monitor thread
+            # stays alive — the next _prune pass will clean up.
+            logger.debug("poll() error (will retry)", exc_info=True)
 
     def get_all_frames(self) -> Dict[int, Optional[np.ndarray]]:
         """Return the current frame dict (live or parked) for all cameras."""
@@ -324,6 +364,118 @@ class MultiplexGroup:
     def get_last_fresh(self) -> Dict[int, Optional[float]]:
         """Return the last-fresh timestamp for each camera."""
         return dict(self._last_fresh)
+
+    # -- hot-unplug handling -------------------------------------------------
+
+    def remove_camera(self, idx: int) -> None:
+        """Tear down and forget a single camera (e.g. it was unplugged).
+
+        Releases the device, drops it from the active window, the round-robin
+        order and the frame / timestamp maps.  If the removed camera was
+        streaming, a parked survivor is promoted into the freed slot so it
+        does not stay frozen on its last frame.
+        """
+        if idx not in self._frames and idx not in self._devices:
+            return
+
+        with self._lock:
+            was_active = idx in self._active
+            self._active.pop(idx, None)
+            dev = self._devices.pop(idx, None)
+
+        # Release the device outside the lock (close()/release() may block).
+        if dev is not None:
+            try:
+                if isinstance(dev, V4L2Camera):
+                    dev.close()
+                elif isinstance(dev, cv2.VideoCapture):
+                    dev.release()
+            except Exception as e:  # pragma: no cover - best-effort teardown
+                logger.debug("cam%d: release on removal failed: %s", idx, e)
+
+        with self._lock:
+            self._frames.pop(idx, None)
+            self._last_fresh.pop(idx, None)
+            if idx in self.cameras:
+                self.cameras.remove(idx)
+            self._rr = deque(c for c in self._rr if c != idx)
+
+        logger.info("cam%d: removed from multiplex group (disconnected)", idx)
+
+        # Re-fill the window if removing an active camera left a slot open.
+        if was_active and self._started:
+            self._fill_active_slots()
+
+    def _fill_active_slots(self) -> None:
+        """STREAMON / open parked cameras until the active window is full.
+
+        Called after a camera is removed so a freed slot is taken by a parked
+        survivor.  Without this, a surviving camera could stay parked (frozen
+        on its last frame) forever because rotation is skipped once the
+        device count drops to ``slots``.
+        """
+        target = min(self.slots, len(self.cameras))
+        use_v4l2 = self.backend == "v4l2" and sys.platform == "linux"
+        while len(self._active) < target:
+            nxt = self._next_candidate()
+            if nxt is None:
+                break
+            if use_v4l2:
+                dev = self._devices.get(nxt)
+                if dev is None:
+                    break
+                try:
+                    dev.start()
+                    dev.read(timeout=1.0)
+                    self._active[nxt] = dev
+                    self._last_fresh[nxt] = time.time()
+                    logger.debug("cam%d: STREAMON (slot refill)", nxt)
+                except OSError as e:
+                    logger.warning("cam%d: STREAMON failed on refill: %s", nxt, e)
+                    break
+            else:
+                cap = self._open_opencv_camera(nxt)
+                if cap is None:
+                    logger.warning("cam%d: OpenCV open failed on refill", nxt)
+                    break
+                self._devices[nxt] = cap
+                self._active[nxt] = cap
+                self._last_fresh[nxt] = time.time()
+                logger.debug("cam%d: opened (slot refill, opencv)", nxt)
+
+    def add_cameras(self, cameras: List[int]) -> None:
+        """Add new cameras to an already-running group (hot-plug).
+
+        Opens the new devices and places them in the round-robin.  If the
+        active window has spare slots, the new cameras are STREAMON'd / opened
+        immediately; otherwise they are parked and will be rotated in.
+        """
+        use_v4l2 = self.backend == "v4l2" and sys.platform == "linux"
+        for c in cameras:
+            if c in self._devices or c in self._frames:
+                continue  # already known
+
+            if use_v4l2:
+                try:
+                    dev = V4L2Camera(c, self.width, self.height, self.fourcc)
+                    self._devices[c] = dev
+                except OSError as e:
+                    logger.warning("cam%d: V4L2 open failed on add: %s", c, e)
+                    continue
+            # OpenCV devices are opened lazily on STREAMON / rotation.
+
+            self.cameras.append(c)
+            self._rr.append(c)
+            self._frames[c] = None
+            self._last_fresh[c] = None
+            logger.info("cam%d: added to multiplex group (hot-plug)", c)
+
+        # Recalculate slots (may have grown)
+        self.slots = min(self.slots, len(self.cameras))
+
+        # Fill any spare active slots with the newly added cameras
+        if self._started:
+            self._fill_active_slots()
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +617,131 @@ class MultiplexScheduler:
         for group in self._groups.values():
             group.poll()
 
+    def reconfigure(self, camera_indices: List[int]) -> Tuple[Set[int], Set[int]]:
+        """Re-evaluate multiplex topology after a hot-plug event.
+
+        Re-runs ``needs_multiplexing`` with the current device list and
+        adjusts groups accordingly: new congested cameras are added to the
+        appropriate group (or a new group is created), cameras that are no
+        longer congested (or no longer present) are removed.
+
+        Args:
+            camera_indices: the full set of currently available camera
+                indices (same as what was passed to ``configure``).
+
+        Returns:
+            ``(added, removed)`` where *added* are camera indices newly
+            placed under multiplex management (the caller should stop
+            their per-camera threads) and *removed* are cameras that left
+            multiplex management (the caller may start threads for them).
+        """
+        new_cg, new_gs, new_mc = needs_multiplexing(
+            camera_indices, mode=self._mode, default_slots=self._slots
+        )
+
+        old_mpx = set(self._multiplex_cameras)
+        new_mpx = set(new_mc)
+        added: Set[int] = new_mpx - old_mpx
+        removed: Set[int] = old_mpx - new_mpx
+
+        if not added and not removed:
+            return added, removed
+
+        # --- Remove cameras that are no longer multiplexed ---
+        for idx in removed:
+            gid = self._camera_group.get(idx)
+            group = self._groups.get(gid) if gid is not None else None
+            if group is not None:
+                group.remove_camera(idx)
+                if not group.cameras:
+                    group.stop()
+                    self._groups.pop(gid, None)
+            self._camera_group.pop(idx, None)
+
+        # --- Add cameras that are newly multiplexed ---
+        from collections import defaultdict
+        new_group_cams: Dict[str, List[int]] = defaultdict(list)
+        for idx in added:
+            gid = new_cg[idx]
+            new_group_cams[gid].append(idx)
+
+        for gid, cams in new_group_cams.items():
+            k = new_gs[gid]
+            existing = self._groups.get(gid)
+            if existing is not None:
+                # Add cameras to the existing group
+                existing.add_cameras(cams)
+            else:
+                # Create a new group
+                group = MultiplexGroup(
+                    cameras=cams,
+                    slots=k,
+                    frame_queue=self.frame_queue,
+                    width=self.width,
+                    height=self.height,
+                    fps=self.fps,
+                    fourcc=self.fourcc,
+                    dwell=self._dwell,
+                    settle=self._settle,
+                    backend=self._backend,
+                    hw_acceleration=self.hw_acceleration,
+                )
+                group.start()
+                self._groups[gid] = group
+
+        # Update bookkeeping
+        self._camera_group = new_cg
+        self._group_slots = new_gs
+        self._multiplex_cameras = new_mc
+
+        if added:
+            logger.info("Multiplex reconfigure: added cameras %s", sorted(added))
+        if removed:
+            logger.info("Multiplex reconfigure: removed cameras %s", sorted(removed))
+
+        return added, removed
+
     def get_multiplex_cameras(self) -> List[int]:
         """Return the list of camera indices managed by the scheduler."""
         return list(self._multiplex_cameras)
+
+    def sync_available(self, present: Set[int]) -> Set[int]:
+        """Prune multiplexed cameras whose device nodes have disappeared.
+
+        Args:
+            present: indices that currently exist (e.g. from
+                :func:`omniview.usb_topology.present_video_devices`).
+
+        Any managed camera absent from *present* is removed from its group
+        (closing the device).  A group left with no cameras is stopped and
+        discarded.  This is what makes multiplexed cameras disappear after a
+        hub is unplugged, mirroring the hot-unplug removal that ordinary
+        per-thread cameras already get.
+
+        Returns:
+            The set of camera indices that were removed (empty if nothing
+            changed).
+        """
+        missing = set(self._multiplex_cameras) - set(present)
+        if not missing:
+            return set()
+
+        for idx in missing:
+            gid = self._camera_group.get(idx)
+            group = self._groups.get(gid) if gid is not None else None
+            if group is not None:
+                group.remove_camera(idx)
+                if not group.cameras:
+                    group.stop()
+                    self._groups.pop(gid, None)
+                    self._group_slots.pop(gid, None)
+            self._camera_group.pop(idx, None)
+
+        self._multiplex_cameras = [
+            c for c in self._multiplex_cameras if c not in missing
+        ]
+        logger.info("Multiplex: dropped disconnected cameras %s", sorted(missing))
+        return missing
 
     def get_active_cameras(self) -> Set[int]:
         """Return the set of currently-streaming camera indices across all groups."""
